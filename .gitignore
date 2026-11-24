@@ -11,3 +11,4 @@ car/.viewtoken
 dist/
 car/calib.json
 .claude/
+context/
