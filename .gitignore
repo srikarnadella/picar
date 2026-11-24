@@ -1,0 +1,13 @@
+reference/
+__pycache__/
+*.pyc
+.venv/
+car/.token
+.taste-skill/
+.playwright-mcp/
+car/settings.json
+car/settings.json.tmp
+car/.viewtoken
+dist/
+car/calib.json
+.claude/

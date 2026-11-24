@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Picar</title>
+<link rel="stylesheet" href="vendor/xterm.css">
+<style>
+  /* One header: the dashboard's own. The app adds only a side panel (commands + terminal), same style as the dashboard. */
+  @font-face { font-family:"Public Sans"; font-weight:400 700; src:url(publicsans.woff2) format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:400 700; src:url(jbm.woff2) format("woff2"); }
+  :root { --ground:#171719; --surface:#131217; --raised:#212023; --control:#3a3a3e; --text:#fff; --muted:#a3a5ab; --accent:#4a8ad6;
+          --negative:#e5566f; --line:#222224; --side:440px; }
+  [hidden] { display:none !important; }
+  * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; overflow:hidden; }
+  body { background:#000; color:var(--text); font:400 13px/18px "Public Sans", system-ui, sans-serif; display:grid; grid-template-columns:1fr var(--side); }
+  body.noterm { grid-template-columns:1fr 0; } body.noterm #side { display:none; }
+  button { font:inherit; font-weight:500; color:var(--text); background:var(--raised); border:0; border-radius:6px; height:32px; padding:0 10px; cursor:pointer; white-space:nowrap; }
+  button:hover { background:var(--control); } button:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+
+  /* dashboard */
+  #dash { position:relative; min-width:0; }
+  #car { position:absolute; inset:0; width:100%; height:100%; border:0; }
+  #msg { position:absolute; inset:0; display:grid; place-content:center; text-align:center; gap:10px; padding:24px; background:var(--ground); }
+  #msg b { font-size:16px; font-weight:600; } #msg span { color:var(--muted); max-width:520px; } #msg button { justify-self:center; border-radius:999px; padding:0 16px; }
+
+  /* side panel: icons, grouped commands, terminal */
+  #side { display:grid; grid-template-rows:48px auto 1fr; grid-template-columns:minmax(0, 1fr);   /* the terminal's drawing area must not widen the panel */ background:var(--surface); border-left:1px solid var(--line); min-height:0; }
+  .bar { display:flex; align-items:center; gap:4px; padding:0 8px 0 14px; border-bottom:1px solid var(--line); }
+  .bar b { font-size:13px; font-weight:600; flex:1; }
+  .icon { width:32px; padding:0; display:grid; place-items:center; background:none; } .icon svg { width:17px; height:17px; }
+  .cmds { padding:10px 14px 12px; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr));   /* columns may shrink below a long label */ gap:6px; border-bottom:1px solid var(--line); }
+  .cmds h3 { grid-column:1 / -1; font-size:12px; font-weight:500; color:var(--muted); margin-top:6px; }
+  .cmds h3:first-child { margin-top:0; }
+  .cmds button { text-align:left; overflow:hidden; text-overflow:ellipsis; }
+  .cmds button.warn { color:#ffb3c0; }
+  #term { padding:8px 4px 4px 12px; min-height:0; min-width:0; overflow:hidden; background:#0f0e12; }
+
+  /* collapsed: a slim tab on the right edge brings the panel back */
+  #tab { position:fixed; right:0; top:50%; transform:translateY(-50%); width:22px; height:88px; padding:0; border-radius:6px 0 0 6px; writing-mode:vertical-rl;
+         font-size:11px; color:var(--muted); background:var(--raised); z-index:3; }
+
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.5); display:grid; place-content:center; z-index:5; }
+  .dlg { width:400px; background:var(--surface); border-radius:6px; padding:18px; box-shadow:0 12px 28px rgba(0,0,0,.5); }
+  .dlg p { margin:8px 0 12px; color:#e6e6e8; } .dlg code { display:block; font:11.5px "JetBrains Mono", monospace; color:var(--muted); margin-bottom:14px; word-break:break-all; max-height:90px; overflow:auto; }
+  .dlg .row { display:flex; gap:8px; justify-content:flex-end; } .dlg button { border-radius:999px; padding:0 16px; }
+  #mYes { background:var(--negative); color:#000; font-weight:600; } #mYes.safe { background:var(--text); }
+</style>
+</head>
+<body>
+<main id="dash">
+  <iframe id="car" title="Car dashboard" allow="autoplay; fullscreen" hidden></iframe>
+  <div id="msg"><b>Connecting to the car</b><span>Fetching the car's key over SSH.</span></div>
+</main>
+
+<aside id="side">
+  <div class="bar"><b>Car commands</b>
+    <button class="icon" id="reload" title="Reload dashboard" aria-label="Reload dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+    <button class="icon" id="browser" title="Open dashboard in browser" aria-label="Open dashboard in browser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
+    <button class="icon" id="hide" title="Hide panel" aria-label="Hide panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 6l6 6-6 6"/></svg></button>
+  </div>
+  <div class="cmds" id="cmds"></div>
+  <div id="term"></div>
+</aside>
+<button id="tab" hidden title="Show car commands and terminal">Commands</button>
+
+<div id="modal" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="mTitle"><b id="mTitle"></b><p id="mText"></p><code id="mCmd"></code>
+  <div class="row"><button id="mNo">Cancel</button><button id="mYes">Run it</button></div></div></div>
+
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let api = null, url = null, retry = null;
+
+// ---- terminal: your shell, shown with xterm.js; output arrives from Python as base64
+const term = new Terminal({ fontFamily: "'JetBrains Mono', Menlo, monospace", fontSize: 12, cursorBlink: true, scrollback: 5000,
+  theme: { background: "#0f0e12", foreground: "#e6e6e8", cursor: "#4a8ad6", selectionBackground: "#4a8ad655" } });
+const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open($("term"));
+function termWrite(b64) { const s = atob(b64), a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); term.write(a); }
+const refit = () => { if (document.body.classList.contains("noterm")) return; fit.fit(); api && api.term_resize(term.cols, term.rows); };
+new ResizeObserver(refit).observe($("term"));
+
+// ---- confirm dialog
+function ask(title, text, cmd, danger = true) {
+  return new Promise(done => {
+    $("mTitle").textContent = title; $("mText").textContent = text; $("mCmd").textContent = cmd;
+    $("mYes").textContent = danger ? "Run it" : "Stop it and run"; $("mYes").className = danger ? "" : "safe";
+    $("modal").hidden = false; $("mYes").focus();
+    const end = ok => { $("modal").hidden = true; done(ok); };
+    $("mYes").onclick = () => end(true); $("mNo").onclick = () => end(false);
+    $("modal").onkeydown = e => { if (e.key === "Escape") end(false); };
+  });
+}
+
+// ---- dashboard: the car's own page (its header is the only header); retries by itself while the car is away
+function message(title, text, button) {
+  $("car").hidden = true; $("msg").hidden = false;
+  const kids = [Object.assign(document.createElement("b"), { textContent: title }), Object.assign(document.createElement("span"), { textContent: text })];
+  if (button) kids.push(Object.assign(document.createElement("button"), { textContent: "Try now", onclick: connect }));
+  $("msg").replaceChildren(...kids);
+}
+async function connect() {
+  clearTimeout(retry);
+  message("Connecting to the car", "Fetching the car's key over SSH.");
+  const r = await api.connect();
+  if (!r.ok) { message("Can't reach the car", r.error + " Trying again every 10 seconds.", true); retry = setTimeout(connect, 10000); return; }
+  url = r.url; $("car").src = url; $("car").hidden = false; $("msg").hidden = true;
+}
+$("reload").onclick = () => url ? ($("car").src = url) : connect();
+$("browser").onclick = () => url && api.open_in_browser(url.replace("&join=watch", ""));
+const panel = show => { document.body.classList.toggle("noterm", !show); $("tab").hidden = show; setTimeout(refit, 50); };
+$("hide").onclick = () => panel(false); $("tab").onclick = () => panel(true);
+
+// ---- commands: grouped; if something is still running in the terminal, ask before stopping it
+async function runCommand(c) {
+  if (c.confirm && !(await ask(c.label, c.confirm, c.cmd))) return;
+  const running = await api.busy();
+  if (running && !(await ask("Something is still running", running + " is running in the terminal. Stop it and run " + c.label + "?", c.cmd, false))) return;
+  await api.run(c.cmd, !!running); term.focus();
+}
+
+window.addEventListener("pywebviewready", async () => {
+  api = window.pywebview.api;
+  const info = await api.info();
+  let group = null;
+  for (const c of info.commands) {
+    if (c.group !== group) { group = c.group; $("cmds").append(Object.assign(document.createElement("h3"), { textContent: group })); }
+    const b = document.createElement("button"); b.textContent = c.label; b.title = c.cmd; if (c.confirm) b.className = "warn";
+    b.onclick = () => runCommand(c); $("cmds").append(b);
+  }
+  fit.fit(); term.onData(d => api.term_input(d)); await api.term_start(term.cols, term.rows); term.focus();
+  connect();
+});
+</script>
+</body>
+</html>

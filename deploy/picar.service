@@ -1,0 +1,20 @@
+[Unit]
+Description=Pi car server
+After=network.target
+# keep retrying forever (default gives up after 5 quick failures)
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=pi
+WorkingDirectory=/home/pi/picar
+ExecStart=/home/pi/env/bin/python -u -m car.server
+# the PCA9685 keeps its last pulse if we die, so always write neutral afterwards
+ExecStopPost=/home/pi/env/bin/python -m car.stop
+Restart=always
+RestartSec=2
+WatchdogSec=3
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target

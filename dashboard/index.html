@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<link rel="icon" href="data:,">
+<meta name="theme-color" content="#131217">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>PICAR-01</title>
+<style>
+  /* data-terminal, over live video: the camera fills the screen; the header and the controls sit on it,
+     translucent and flat (no blur, no glow). Every figure is mono; the accent is only ever a 1px line.
+     Fonts are self-hosted so the page works on the car's own hotspot. */
+  @font-face { font-family:"Public Sans"; font-weight:400 700; font-display:swap; src:url(publicsans.woff2) format("woff2"); }
+  @font-face { font-family:"JetBrains Mono"; font-weight:400 700; font-display:swap; src:url(jbm.woff2) format("woff2"); }
+  :root {
+    --surface:#131217; --raised:#212023; --control:#3a3a3e; --text:#fff; --muted:#a3a5ab; --accent:#4a8ad6;
+    --negative:#e5566f; --warning:#d9a441;
+    --pos-bg:#1b2828; --pos-ink:#5fc39c; --neg-bg:#2c1a20; --neg-ink:#e5566f; --warn-bg:#2a2416; --warn-ink:#d9a441; --neu-bg:#212023; --neu-ink:#bdbdc0;
+    --glass:rgba(19,18,23,.72); --bar:52px; --edge:max(16px,env(safe-area-inset-left)); --edge-r:max(16px,env(safe-area-inset-right)); --foot:max(16px,env(safe-area-inset-bottom));
+    --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  }
+  [hidden] { display:none !important; }   /* no display rule may resurrect a hidden element */
+  * { box-sizing:border-box; margin:0; touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; overscroll-behavior:none; }
+  body { position:fixed; inset:0; background:#000; color:var(--text); font:400 13px/18px "Public Sans",system-ui,sans-serif; }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+
+  /* ---- the camera is the background */
+  #video { position:fixed; left:0; top:var(--bar); width:100%; height:calc(100% - var(--bar)); object-fit:contain; background:#000; }   /* black bars, never crop the view */
+  #nofeed { position:fixed; inset:0; display:grid; place-content:center; text-align:center; gap:4px; }
+  #nofeed b { font-weight:600; font-size:16px; } #nofeed span { color:var(--muted); } #nofeed.hide { display:none; }
+  .lost #video, .denied #video, .down #video { opacity:.25; }   /* a frozen last frame must not look live */
+
+  /* ---- header: identity, state, always latency + video, one swappable group, actions */
+  header { position:fixed; top:0; left:0; right:0; height:var(--bar); z-index:2; display:flex; align-items:center; gap:12px;
+           padding:0 var(--edge-r) 0 var(--edge); background:var(--glass); min-width:0; }
+  .brand { display:flex; align-items:center; gap:8px; flex:none; } .brand svg { width:20px; height:20px; }
+  h1 { font-size:15px; font-weight:600; white-space:nowrap; }
+  .pill { display:inline-flex; align-items:center; height:22px; padding:0 9px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; flex:none; background:var(--neu-bg); color:var(--neu-ink); }
+  .pill.pos { background:var(--pos-bg); color:var(--pos-ink); } .pill.warn { background:var(--warn-bg); color:var(--warn-ink); } .pill.neg { background:var(--neg-bg); color:var(--neg-ink); }
+  #info { display:flex; align-items:center; gap:14px; min-width:0; flex:1; overflow:hidden; }
+  .stat { display:flex; flex-direction:column; white-space:nowrap; flex:none; }
+  .stat span { font-size:11px; line-height:13px; color:var(--muted); } .stat b { font-size:13px; line-height:17px; font-weight:500; }
+  #vals { display:flex; gap:14px; min-width:0; overflow:hidden; }
+  .warn-t { color:var(--warning); } .neg-t { color:var(--negative); }
+  button { font:inherit; font-weight:500; color:var(--text); background:var(--raised); border:0; border-radius:999px; height:34px; padding:0 14px; cursor:pointer; touch-action:manipulation; white-space:nowrap; flex:none; }
+  button:active { background:var(--control); } button:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+  button[aria-expanded="true"] { box-shadow:inset 0 -1px 0 var(--accent); }   /* the style's one selection mark */
+  #groupBtn { height:30px; padding:0 10px; background:rgba(255,255,255,.08); }
+  #groupBtn::after { content:""; display:inline-block; margin-left:6px; border:4px solid transparent; border-top:5px solid var(--muted); vertical-align:-2px; }
+  .halt { background:var(--negative); color:#000; font-weight:600; } .halt:active { background:#ff7d92; }
+  #retake { display:none; } .watch #retake { display:inline-block; }
+
+  /* ---- controls: translucent tracks over the video, a white thumb, a 1px accent line from zero */
+  .track { position:fixed; z-index:1; background:rgba(19,18,23,.42); border:1px solid rgba(255,255,255,.14); border-radius:999px; }
+  #steer { left:var(--edge); bottom:var(--foot); width:min(36vw,380px); height:56px; }
+  #thr { right:var(--edge-r); bottom:var(--foot); width:64px; height:min(calc(100vh - var(--bar) - 80px),300px); }
+  .track .tk { position:absolute; background:rgba(255,255,255,.28); } .track .zero { background:rgba(255,255,255,.7); }
+  .track .line { position:absolute; background:var(--accent); }
+  .track .knob { position:absolute; width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.92); }
+  .track .lb { position:absolute; font-size:11px; color:#e6e6e8; }
+  .zone { position:absolute; inset:-20px; touch-action:none; }
+  .readout { position:absolute; top:-28px; font-size:12px; padding:2px 7px; border-radius:4px; background:rgba(0,0,0,.6); }
+  #steer .readout { left:0; } #thr .readout { left:50%; transform:translateX(-50%); }
+
+  /* ---- small menus */
+  .pop { position:fixed; top:calc(var(--bar) + 8px); right:14px; z-index:3; width:280px; background:var(--surface); border-radius:6px; box-shadow:0 12px 28px rgba(0,0,0,.5); padding:14px; display:none; }
+  .pop.open { display:block; }
+  .pop h2 { font-size:13px; font-weight:600; }
+  #groupMenu { width:180px; padding:6px; }
+  #groupMenu button { display:block; width:100%; text-align:left; background:none; border-radius:4px; height:40px; padding:0 10px; }
+  #groupMenu button[aria-checked="true"] { box-shadow:inset 1px 0 0 var(--accent); color:var(--text); }
+  #groupMenu button[aria-checked="false"] { color:var(--muted); }
+  #pwrVal { font-size:28px; line-height:36px; margin:6px 0 2px; }
+  input[type=range] { width:100%; height:44px; accent-color:var(--accent); touch-action:pan-x; display:block; }
+  .pop p { color:var(--muted); margin-top:4px; }
+  #keys { margin-top:8px; display:grid; } #keys button { background:none; border-radius:0; height:42px; text-align:left; padding:0; border-top:1px solid #1b1a1f; display:flex; justify-content:space-between; }
+  #keys button:first-child { border-top:0; } #keys button:active { color:var(--accent); }
+
+  /* settings */
+  .ico { width:18px; height:18px; display:none; vertical-align:-4px; }
+  #eyeBtn { width:34px; padding:0; display:grid; place-items:center; } #eyeBtn svg { width:19px; height:19px; }
+  #eyeBtn[aria-pressed="true"] { color:var(--accent); box-shadow:inset 0 -1px 0 var(--accent); }
+  .viewer #eyeBtn { display:none !important; }
+  #setBtn { width:34px; padding:0; display:grid; place-items:center; } #setBtn svg { width:18px; height:18px; }
+  #settings { width:310px; }
+  .set { display:flex; justify-content:space-between; align-items:center; gap:12px; min-height:46px; border-top:1px solid #1b1a1f; }
+  .set:first-of-type { border-top:0; margin-top:6px; } .set > span { color:var(--muted); }
+  .seg { display:flex; gap:2px; } .seg button { height:32px; padding:0 10px; background:none; border-radius:4px; color:var(--muted); }
+  .seg button[aria-pressed="true"] { color:var(--text); box-shadow:inset 0 -1px 0 var(--accent); }   /* the style's one selection mark */
+  .swap #steer { left:auto; right:var(--edge-r); } .swap #thr { right:auto; left:var(--edge); }   /* left-handed */
+  .swap #steer .readout { left:auto; right:0; }
+  .nokeys #keyhint { display:none !important; }
+  #tap { position:fixed; left:0; top:var(--bar); width:100%; height:calc(100% - var(--bar)); z-index:0; touch-action:none; }
+  #tapMark { position:fixed; z-index:1; width:40px; height:40px; margin:-20px 0 0 -20px; border:2px solid #fff; border-radius:50%; pointer-events:none; }
+  #tapMark::after { content:""; position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px; border-radius:50%; background:var(--accent); }
+  .viewer #tap { display:none; }
+  #ov { position:fixed; left:0; top:var(--bar); width:100%; height:calc(100% - var(--bar)); z-index:0; pointer-events:none; }
+  #followHere { position:fixed; z-index:2; display:none; background:#fff; color:#000; font-weight:600; }
+  #followHere.show { display:block; } #followHere:disabled { background:var(--raised); color:var(--muted); }
+  #followSeg { flex-wrap:wrap; margin:8px 0; } #followSeg button { height:30px; }
+  .rowbtn { display:flex; gap:8px; align-items:center; justify-content:space-between; margin-top:6px; }
+  .viewer .track, .viewer .halt, .viewer #pwrBtn, .viewer #audBtn, .viewer #retake, .viewer #keyhint, .viewer .fullonly { display:none !important; }
+  .wide { width:340px !important; } .wide, #settings { max-height:calc(100% - var(--bar) - 20px); overflow:auto; touch-action:pan-y; }
+  #shareUrl { width:100%; height:36px; margin:10px 0 8px; padding:0 10px; border:0; border-radius:4px; background:var(--raised); color:var(--text); font:12px var(--mono); user-select:text; -webkit-user-select:text; touch-action:auto; }
+  .btns { display:flex; gap:8px; } #shareMsg { min-height:18px; }
+  #calibPop a { color:var(--accent); } #calCount { font-size:26px; line-height:34px; margin:10px 0 2px; }
+  #calibPop ol { margin:8px 0 0 18px; padding:0; color:#d6d6d8; } #calibPop li { margin-bottom:4px; } #calMsg { min-height:18px; }
+  .row { display:flex; justify-content:space-between; gap:10px; min-height:26px; align-items:center; border-top:1px solid #1b1a1f; }
+  .row:first-child { border-top:0; } .row span { color:var(--muted); } .row b { font-weight:500; text-align:right; }
+  #hLog { font-size:11.5px; line-height:17px; margin-top:6px; color:#d6d6d8; }
+  #hLog div { display:flex; gap:10px; } #hLog time { color:var(--muted); flex:none; }
+  #health h2 { display:flex; justify-content:space-between; align-items:center; } #health h2 button { height:28px; font-size:12px; }
+  #settings h2.sub { margin-top:16px; } #carNote { margin:2px 0 4px; font-size:12px; }
+  .step { display:flex; align-items:center; gap:4px; } .step b { min-width:58px; text-align:center; font-size:13px; font-weight:500; }
+  .step button { width:36px; height:32px; padding:0; border-radius:4px; background:var(--raised); }
+  .step button:disabled { opacity:.35; cursor:default; }
+  /* laptop view (mouse/trackpad + wide screen, or ?view=laptop): every group at once, keyboard guide */
+  .allgroups #groupBtn { display:none; }
+  .gsep { width:1px; height:28px; background:rgba(255,255,255,.16); flex:none; }
+  #keyhint { position:fixed; z-index:1; left:50%; top:calc(var(--bar) + 10px); transform:translateX(-50%); display:none; font-size:12px; color:#d6d6d8; background:rgba(0,0,0,.6); padding:6px 10px; border-radius:4px; white-space:nowrap; }
+  .laptop #keyhint { display:block; }
+  .allgroups #vals { overflow:visible; }
+  @media (max-width:980px) and (orientation:landscape) { h1 { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); } }
+  /* portrait: the readouts get their own strip under the header (a 390 px header cannot hold them) */
+  @media (orientation:portrait) {
+    h1 { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+    .lbl { display:none; } .ico { display:inline-block; } #audBtn { width:34px; padding:0; } header { gap:8px; }   /* the gear must fit */
+    #video, #tap, #ov { top:calc(var(--bar) + 46px); height:calc(100% - var(--bar) - 46px); object-position:top; }   /* video on top, controls in the black below */
+    #info { position:fixed; top:var(--bar); left:0; right:0; height:46px; padding:0 var(--edge-r) 0 var(--edge); background:rgba(19,18,23,.6); overflow-x:auto; touch-action:pan-x; }
+    #steer { width:calc(100vw - 64px - 3 * 16px); }
+    #thr { height:min(46vh,340px); }
+    .pop { left:14px; right:14px; width:auto; } #groupMenu { right:auto; width:200px; }
+  }
+</style>
+</head>
+<body>
+<img id="video" alt="Live camera view"><canvas id="ov" aria-hidden="true"></canvas><button id="followHere">Follow</button><div id="tap" aria-hidden="true"></div><div id="tapMark" hidden></div><div id="nofeed"><b>No video</b><span>Waiting for the camera. It restarts on its own.</span></div>
+
+<header id="hdr">
+  <div class="brand"><svg viewBox="0 0 20 20" fill="none" stroke="#4a8ad6" stroke-width="1.5" aria-hidden="true"><rect x="6" y="2" width="8" height="16" rx="2"/><path d="M3 5v4M17 5v4M3 12v4M17 12v4"/></svg><h1>PICAR-01</h1></div>
+  <span class="pill" id="state" role="status" aria-live="polite">Connecting</span><span class="pill warn" id="sim" hidden title="Mock mode: values are simulated">Sim</span>
+  <span class="pill neg" id="pwrAlert" hidden>Pi power low</span>
+  <div id="info">
+    <span class="stat"><span>Latency</span><b class="num" id="lat">–</b></span>
+    <span class="stat"><span>Video</span><b class="num" id="fps">–</b></span>
+    <button id="groupBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="groupMenu">Network</button>
+    <div id="vals"></div>
+  </div>
+  <button id="retake">Take control</button>
+  <button id="pwrBtn" aria-expanded="false" aria-controls="pop" aria-label="Max power"><span class="lbl" id="modeName">Normal </span><span class="num" id="pwrShort">100%</span></button>
+  <button id="audBtn" aria-expanded="false" aria-controls="audio" aria-label="Sounds"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg><span class="lbl">Sounds</span></button>
+  <button id="eyeBtn" aria-pressed="false" aria-label="Show what the car sees" title="Show what the car sees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+  <button class="halt">Halt</button>
+  <button id="setBtn" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+</header>
+
+<div class="track" id="steer" role="slider" aria-label="Steering" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span class="readout num" id="vs">Steer +0.00</span><span class="lb" style="left:12px;top:50%;transform:translateY(-50%)">L</span><span class="lb" style="right:12px;top:50%;transform:translateY(-50%)">R</span><div class="line" id="steerLine"></div><div class="knob" id="steerKnob"></div><div class="zone" id="steerZone"></div></div>
+<div class="track" id="thr" role="slider" aria-label="Throttle" aria-orientation="vertical" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span class="readout num" id="vt">+0.00</span><span class="lb" style="top:8px;left:50%;transform:translateX(-50%)">Fwd</span><span class="lb" style="bottom:8px;left:50%;transform:translateX(-50%)">Rev</span><div class="line" id="thrLine"></div><div class="knob" id="thrKnob"></div><div class="zone" id="thrZone"></div></div>
+
+<div id="keyhint"><b class="num">W S</b> or <b class="num">↑ ↓</b> throttle · <b class="num">A D</b> or <b class="num">← →</b> steer · <b class="num">Space</b> halt</div>
+<section id="settings" class="pop" aria-label="Settings"><h2>Settings</h2><div id="setRows"></div>
+  <div class="fullonly"><h2 class="sub">Car</h2><p id="carNote">Saved on the car, for every driver.</p><div id="carRows"></div>
+  <h2 class="sub">Camera</h2><div id="camRows"></div>
+  <h2 class="sub">More</h2>
+  <div class="set"><span>View-only link</span><button id="shareOpen">Get link</button></div>
+  <div class="set"><span>Health and logs</span><button id="healthOpen">Open</button></div></div></section>
+<section id="share" class="pop wide" aria-label="View-only link"><h2>View-only link</h2>
+  <p>Anyone with this link sees the video and the data. They can't drive, stop the car, change settings or play sounds.</p>
+  <input id="shareUrl" readonly aria-label="View-only link"><div class="btns"><button id="shareCopy">Copy</button><button id="shareNew">New link</button></div><p id="shareMsg"></p></section>
+<section id="calibPop" class="pop wide" aria-label="Calibrate the camera lens"><h2>Calibrate the camera lens</h2>
+  <ol><li>Open the <a href="/board.png" target="_blank" rel="noopener">checkerboard</a> and print it, or show it full screen on another screen.</li>
+  <li>Tap <b>Start hands-free</b>, then stand in front of the car holding the board flat and fully in view.</li>
+  <li>Move it slowly around the picture: centre, corners, edges, tilted, closer and further. The car captures by itself each time it sees the board somewhere new (this device beeps), and finishes after 12.</li></ol>
+  <div class="num" id="calCount">0 of 12</div><p id="calMsg"></p>
+  <div class="btns"><button id="calAuto" style="background:#fff;color:#000;font-weight:600">Start hands-free</button><button id="calRestart">Start over</button></div>
+  <div class="btns" style="margin-top:8px"><button id="calCap">Capture once</button><button id="calFin">Finish now</button></div>
+  <p id="calState" style="margin-top:10px"></p><button id="calClear" style="margin-top:6px">Remove calibration</button></section>
+<section id="health" class="pop wide" aria-label="Health and logs"><h2>Health <button id="healthRefresh">Refresh</button></h2><div id="hRows"></div>
+  <h2 class="sub" style="margin-top:14px">Performance, last 10 s</h2><div id="hPerf" class="num"></div>
+  <h2 class="sub" style="margin-top:14px">Recent events</h2><div id="hLog" class="num"></div></section>
+<section id="groupMenu" class="pop" role="menu" aria-label="Header values"></section>
+<section id="pop" class="pop" aria-label="Driving mode and max power"><h2>Driving mode</h2>
+  <div class="seg" id="modeSeg" style="margin:8px 0 4px"><button data-m="indoor">Indoor</button><button data-m="normal">Normal</button><button data-m="sport">Sport</button></div>
+  <p id="modeNote">Sets max power and how sensitive steering is near centre. L1 / R1 on the PS3.</p>
+  <h2 style="margin-top:14px">Follow</h2>
+  <div class="seg" id="followSeg"><button data-t="person" aria-pressed="true">Person</button><button data-t="dog">Dog</button><button data-t="cat">Cat</button><button data-t="sports ball">Ball</button><button data-t="colour:red">Red</button><button data-t="colour:green">Green</button><button data-t="colour:blue">Blue</button><button data-t="colour:yellow">Yellow</button></div>
+  <div class="rowbtn"><button id="followGo">Start following</button></div>
+  <p id="followNote">The car steers toward the target and stops when it is close. Halt or Take control stops following.</p>
+  <h2 style="margin-top:14px">Max power</h2><div class="num" id="pwrVal">100%</div>
+  <input type="range" id="pwrRange" min="25" max="100" step="5" value="100" aria-label="Max power">
+  <p>Full throttle equals this much of the car's power. The car enforces it.</p></section>
+<section id="audio" class="pop" aria-label="Sounds"><h2>Sounds</h2><div id="keys"></div></section>
+
+<script>
+const params = new URLSearchParams(location.search), token = params.get("t") || "", vtoken = params.get("v") || "";
+const viewer = !token && !!vtoken;   // opened with a view-only link: watch, never drive
+const q = viewer ? "?v=" + encodeURIComponent(vtoken) : "?t=" + encodeURIComponent(token), $ = id => document.getElementById(id);
+if (viewer) document.documentElement.classList.add("viewer");
+const LEASE = 250;
+const store = (k, v) => { try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch (e) { return null; } };
+let prefs = { view: "auto", temp: "c", fit: "contain", vview: "camera", swap: "off", keys: "on", tap: "on", creep: "0.25" };
+try { Object.assign(prefs, JSON.parse(store("picar.prefs") || "{}")); } catch (e) {}
+const SETTINGS = [   // [key, label, [[value, text], ...]]
+  ["view", "View", [["auto", "Auto"], ["phone", "Phone"], ["laptop", "Laptop"]]],
+  ["temp", "Temperature", [["c", "°C"], ["f", "°F"]]],
+  ["fit", "Video size", [["contain", "Fit"], ["cover", "Fill"]]],
+  ["vview", "Video view", [["camera", "Camera"], ["straight", "Straightened"]]],
+  ["swap", "Steering", [["off", "Left"], ["on", "Right"]]],
+  ["keys", "Key guide", [["on", "Show"], ["off", "Hide"]]],
+  ["tap", "Tap to drive", [["on", "On"], ["off", "Off"]]],
+  ["creep", "Tap speed", [["0.25", "Slow"], ["0.4", "Medium"]]],
+];
+let view = "phone";
+function applyPrefs() {   // on <html>: the body class carries the link state
+  const forced = new URLSearchParams(location.search).get("view");
+  view = forced || (prefs.view !== "auto" ? prefs.view : matchMedia("(pointer: fine) and (min-width: 1024px)").matches ? "laptop" : "phone");
+  const html = document.documentElement.classList;
+  html.toggle("laptop", view === "laptop"); html.toggle("swap", prefs.swap === "on"); html.toggle("nokeys", prefs.keys === "off");
+  $("video").style.objectFit = prefs.fit;
+  if (window.reloadVideo) window.reloadVideo();   // the view may have changed: ask the car for that stream
+  $("setRows").replaceChildren(...SETTINGS.map(([key, label, opts]) => {
+    const row = document.createElement("div"), l = document.createElement("span"), seg = document.createElement("div");
+    row.className = "set"; l.textContent = label; seg.className = "seg";
+    opts.forEach(([val, text]) => { const b = document.createElement("button"); b.textContent = text; b.setAttribute("aria-pressed", prefs[key] === val);
+      b.onclick = () => { prefs[key] = val; store("picar.prefs", JSON.stringify(prefs)); applyPrefs(); showGroup(); render(); }; seg.append(b); });
+    row.append(l, seg); return row; }));
+}
+let steer = 0, throttle = 0, ws, seq = 0, opened = false, lastAck = 0, rtt = null, tm = null, noVideoSince = null, power = 1;
+const hist = [];
+
+// ---- tracks: drag anywhere in the zone, spring back to zero on release
+function track(name, axis, onChange) {
+  const rail = $(name), zone = $(name + "Zone"), knob = $(name + "Knob"), line = $(name + "Line"), k = 30; let pid = null;
+  const ticks = [];
+  for (let i = 0; i <= 8; i++) { const t = document.createElement("i"); t.className = "tk" + (i === 4 ? " zero" : ""); rail.insertBefore(t, line); ticks.push(t); }
+  const draw = v => {
+    const r = rail.getBoundingClientRect(), L = axis === "x" ? r.width : r.height, W = axis === "x" ? r.height : r.width, span = L - 2 * k;
+    ticks.forEach((t, i) => { const p = k + i / 8 * span, h = i === 4 ? W - 16 : 10;
+      t.style.cssText = axis === "x" ? `left:${p}px;top:${(W - h) / 2}px;width:1px;height:${h}px` : `top:${p}px;left:${(W - h) / 2}px;height:1px;width:${h}px`; });
+    const c = k + (axis === "x" ? v + 1 : 1 - v) / 2 * span, a = Math.min(c, L / 2), len = Math.abs(c - L / 2);
+    if (axis === "x") { knob.style.cssText = `left:${c - 22}px;top:${(W - 44) / 2 - 1}px`; line.style.cssText = `left:${a}px;width:${len}px;top:${W / 2 - 1}px;height:1px`; }
+    else { knob.style.cssText = `top:${c - 22}px;left:${(W - 44) / 2 - 1}px`; line.style.cssText = `top:${a}px;height:${len}px;left:${W / 2 - 1}px;width:1px`; }
+    rail.setAttribute("aria-valuenow", Math.round(v * 100));
+  };
+  const set = e => {
+    const r = rail.getBoundingClientRect();
+    let v = axis === "x" ? (e.clientX - r.left - k) / (r.width - 2 * k) * 2 - 1 : 1 - (e.clientY - r.top - k) / (r.height - 2 * k) * 2;
+    v = Math.max(-1, Math.min(1, v)); if (Math.abs(v) < 0.04) v = 0; draw(v); onChange(v);
+  };
+  const reset = () => { pid = null; draw(0); onChange(0); };
+  zone.addEventListener("pointerdown", e => { if (pid === null) { pid = e.pointerId; zone.setPointerCapture(pid); set(e); } });
+  zone.addEventListener("pointermove", e => { if (e.pointerId === pid) set(e); });
+  zone.addEventListener("pointerup", e => { if (e.pointerId === pid) reset(); });
+  zone.addEventListener("pointercancel", e => { if (e.pointerId === pid) reset(); });
+  new ResizeObserver(() => draw(axis === "x" ? steer : throttle)).observe(rail);
+  return { reset, draw };
+}
+const S = track("steer", "x", v => steer = v), T = track("thr", "y", v => throttle = v);
+const keys = {};
+let kS = 0, kT = 0, kSt = 0, kTt = 0, kbOn = false;   // keyboard: current and target
+const halt = () => { for (const k in keys) keys[k] = false; kS = kT = kSt = kTt = 0; kbOn = false; tapPid = null; $("tapMark").hidden = true; S.reset(); T.reset(); };   // also ends a tap in progress
+
+// keyboard for laptop testing (space = halt); hiding the page halts (the car-side lease is the real protection)
+const kb = () => { kSt = (keys.arrowright || keys.d ? 1 : 0) - (keys.arrowleft || keys.a ? 1 : 0); kTt = (keys.arrowup || keys.w ? 1 : 0) - (keys.arrowdown || keys.s ? 1 : 0); kbOn = true; };
+const toward = (v, t, step) => v < t ? Math.min(t, v + step) : Math.max(t, v - step);
+setInterval(() => {   // keys ease in (throttle about 1 s to full, steering about 0.25 s); letting go of throttle stops at once
+  if (!kbOn) return;
+  kS = toward(kS, kSt, 0.2);
+  if (kTt === 0) kT = 0;                                          // released: stop at once
+  else if (kT && Math.sign(kT) !== Math.sign(kTt)) kT = 0;        // reversing: through zero first
+  else kT = toward(kT, kTt, 0.05);                                // ease in: 1.0 after about 1 s
+  steer = kS; throttle = kT; S.draw(steer); T.draw(throttle);
+  if (!kSt && !kTt && !kS) kbOn = false;
+}, 50);
+addEventListener("keydown", e => { if (e.target.tagName === "INPUT") return; if (e.key === " ") return halt(); if (e.key === "Escape") return closePops(); keys[e.key.toLowerCase()] = true; kb(); });
+addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; kb(); });
+document.addEventListener("visibilitychange", () => document.hidden && halt()); addEventListener("blur", halt);
+
+// ---- header groups: latency and video always; one group of three beside them, chosen from a small menu
+const GROUPS = {
+  car: ["Car", [["Battery", "bat"], ["Charge", "chg"], ["Controller", "pad"]]],
+  net: ["Network", [["Wi-Fi", "wifi"], ["Lost 5 s", "loss"], ["Jitter", "jit"]]],
+  pi: ["Pi", [["CPU", "temp"], ["Load", "load"], ["Power", "pwr"]]],
+};
+let group = "net";
+let shown = [];
+function showGroup() {
+  const stat = ([l, key]) => { const s = document.createElement("span"), a = document.createElement("span"), b = document.createElement("b");
+    s.className = "stat"; a.textContent = l; b.className = "num"; b.id = "v_" + key; b.textContent = "–"; s.append(a, b); return s; };
+  const all = view === "laptop" && innerWidth >= 1500;   // nine values need a wide window; narrower = the group menu
+  document.documentElement.classList.toggle("allgroups", all);
+  const groups = all ? Object.keys(GROUPS) : [group];
+  const nodes = [];
+  groups.forEach((g, i) => { if (i) { const d = document.createElement("span"); d.className = "gsep"; nodes.push(d); } GROUPS[g][1].forEach(it => nodes.push(stat(it))); });
+  shown = groups.flatMap(g => GROUPS[g][1].map(it => it[1]));
+  $("groupBtn").textContent = GROUPS[group][0];
+  $("vals").replaceChildren(...nodes);
+  $("groupMenu").replaceChildren(...Object.keys(GROUPS).map(g => { const b = document.createElement("button");
+    b.setAttribute("role", "menuitemradio"); b.setAttribute("aria-checked", g === group); b.textContent = GROUPS[g][0];
+    b.onclick = () => { group = g; showGroup(); closePops(); render(); }; return b; }));
+}
+applyPrefs();
+showGroup();
+let wideNow = innerWidth >= 1500;
+addEventListener("resize", () => { if ((innerWidth >= 1500) !== wideNow) { wideNow = !wideNow; showGroup(); render(); } });
+
+// ---- car-wide settings (saved on the car; only the driver may change them, since they move the motors)
+let carSet = { trim: null, defpow: null }, carHold = 0;   // carHold: keep the value just tapped until the car confirms it
+const CAR = [   // [telemetry key, server key, label, step, min, max, format]
+  ["trim", "steer_trim", "Steering trim", 0.01, -0.3, 0.3, v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2)],
+  ["defpow", "default_power", "Default max power", 0.05, 0.25, 1, v => Math.round(v * 100) + "%"],
+];
+$("carRows").replaceChildren(...CAR.map(([k, key, label, step, lo, hi, fmt]) => {
+  const row = document.createElement("div"), l = document.createElement("span"), box = document.createElement("div"), val = document.createElement("b");
+  row.className = "set"; l.textContent = label; box.className = "step"; val.className = "num"; val.id = "car_" + k; val.textContent = "–";
+  const btn = (txt, dir) => { const b = document.createElement("button"); b.textContent = txt; b.className = "carBtn"; b.setAttribute("aria-label", label + (dir > 0 ? " up" : " down"));
+    b.onclick = () => { if (carSet[k] === null) return; const v = Math.round(Math.max(lo, Math.min(hi, carSet[k] + dir * step)) * 1000) / 1000;
+      carSet[k] = v; val.textContent = fmt(v); carHold = performance.now() + 1200; ws && ws.readyState === 1 && ws.send(JSON.stringify({ set: { [key]: v } })); }; return b; };
+  box.append(btn("−", -1), val, btn("+", 1)); row.append(l, box); return row; }));
+// ---- camera settings (saved on the car; driver only, since everyone sees the result)
+const CAM_STEP = [["brightness", "Brightness", 5, 20, 80, 50], ["saturation", "Saturation", 10, -100, 100, 0],
+                  ["contrast", "Contrast", 10, -100, 100, 0], ["sharpness", "Sharpness", 10, -100, 100, 0]];
+const CAM = [["exposure", "Exposure", [["auto", "Auto"], ["night", "Night"]]],
+             ["awb", "White balance", [["auto", "Auto"], ["sunlight", "Sun"], ["cloudy", "Cloud"], ["tungsten", "Indoor"]]],
+             ["flip", "Flip", [["none", "None"], ["upside", "Upside down"], ["mirror", "Mirror"]]],
+             ["quality", "Quality", [["low", "Low"], ["normal", "Normal"], ["high", "High"]]]];
+const camSend = obj => ws && ws.readyState === 1 && ws.send(JSON.stringify({ set: Object.fromEntries(Object.entries(obj).map(([k, v]) => ["cam_" + k, v])) }));
+const camVal = {};
+const camFmt = (key, v) => key === "brightness" ? String(v) : (v > 0 ? "+" : "") + v;
+(() => {
+  const row = (label, box) => { const r = document.createElement("div"), l = document.createElement("span"); r.className = "set"; l.textContent = label; r.append(l, box); return r; };
+  const rows = CAM_STEP.map(([key, label, step, lo, hi]) => {
+    const box = document.createElement("div"), val = document.createElement("b"); box.className = "step"; val.className = "num"; val.id = "cam_" + key; val.textContent = "–";
+    const sb = (txt, d) => { const b = document.createElement("button"); b.textContent = txt; b.className = "carBtn"; b.setAttribute("aria-label", label + (d > 0 ? " up" : " down"));
+      b.onclick = () => { if (camVal[key] === undefined) return; camVal[key] = Math.max(lo, Math.min(hi, camVal[key] + d * step)); val.textContent = camFmt(key, camVal[key]); carHold = performance.now() + 1200; camSend({ [key]: camVal[key] }); }; return b; };
+    box.append(sb("−", -1), val, sb("+", 1)); return row(label, box);
+  });
+  for (const [key, label, opts] of CAM) {
+    const seg = document.createElement("div"); seg.className = "seg"; seg.id = "camseg_" + key;
+    opts.forEach(([v, t]) => { const b = document.createElement("button"); b.textContent = t; b.dataset.v = v; b.className = "carBtn";
+      b.onclick = () => { seg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); carHold = performance.now() + 1200; camSend({ [key]: v }); }; seg.append(b); });
+    rows.push(row(label, seg));
+  }
+  const reset = document.createElement("button"); reset.textContent = "Reset camera"; reset.className = "carBtn";
+  reset.onclick = () => { carHold = 0; camSend(Object.fromEntries([...CAM_STEP.map(c => [c[0], c[5]]), ["exposure", "auto"], ["awb", "auto"], ["flip", "none"], ["quality", "normal"]])); };
+  rows.push(row("", reset));
+  const lensSeg = document.createElement("div"); lensSeg.className = "seg"; lensSeg.id = "lensSeg";
+  [["on", "On"], ["off", "Off"]].forEach(([v, t]) => { const b = document.createElement("button"); b.textContent = t; b.dataset.v = v; b.className = "carBtn";
+    b.onclick = () => { lensSeg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); carHold = performance.now() + 1200;
+      ws && ws.readyState === 1 && ws.send(JSON.stringify({ set: { vision_correct: v } })); }; lensSeg.append(b); });
+  rows.push(row("Fisheye correction", lensSeg));
+  const calOpen = document.createElement("button"); calOpen.textContent = "Calibrate…"; calOpen.id = "calOpen"; calOpen.className = "carBtn";
+  const lensState = document.createElement("span"); lensState.id = "lensState"; lensState.style.cssText = "color:var(--muted);font-size:12px";
+  const box = document.createElement("div"); box.style.cssText = "display:flex;gap:10px;align-items:center"; box.append(lensState, calOpen);
+  rows.push(row("Lens", box));
+  $("camRows").replaceChildren(...rows);
+})();
+function showLens() {
+  const c = tm && tm.calib; if (!c) return;
+  $("lensState").textContent = c.rms ? "calibrated, error " + c.rms + " px" : "not calibrated";
+  $("lensSeg").querySelectorAll("button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.v === (c.on ? "on" : "off")); if (!c.rms) b.disabled = true; });
+  $("calCount").textContent = c.captured + " of " + c.needed;
+  const drv = state === "live" || state === "weak";
+  $("calCap").disabled = $("calRestart").disabled = $("calClear").disabled = !drv; $("calFin").disabled = !drv || c.captured < 6; $("calAuto").disabled = !drv;
+  if (c.auto !== undefined && c.auto !== calAuto) { calAuto = c.auto; $("calAuto").textContent = c.auto ? "Stop hands-free" : "Start hands-free"; }
+  $("calState").textContent = (c.rms ? "Current calibration: error " + c.rms + " px (under 1 is good)." : "No calibration yet: vision uses the curved picture.") + (drv ? "" : " Take control to calibrate.");
+}
+function showCamSettings() {
+  showLens();
+  if (!tm || !tm.cam || performance.now() < carHold) return;
+  for (const [key] of CAM_STEP) if (tm.cam[key] !== undefined) { camVal[key] = tm.cam[key]; $("cam_" + key).textContent = camFmt(key, tm.cam[key]); }
+  for (const [key] of CAM) $("camseg_" + key).querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === tm.cam[key]));
+}
+
+// ---- tap to drive: hold a spot on the video, the car steers toward it and creeps; let go and it stops
+let tapPid = null;
+function videoBox() {   // where the picture really is inside the video element (fit or fill, centred or top)
+  const r = vid.getBoundingClientRect(), iw = vid.naturalWidth || 4, ih = vid.naturalHeight || 3;
+  const s = prefs.fit === "cover" ? Math.max(r.width / iw, r.height / ih) : Math.min(r.width / iw, r.height / ih), w = iw * s, h = ih * s;
+  const top = getComputedStyle(vid).objectPosition.split(" ")[1] === "0%";
+  return { x: r.left + (r.width - w) / 2, y: top ? r.top : r.top + (r.height - h) / 2, w, h };
+}
+function tapAt(e) {
+  const b = videoBox();
+  if (e.clientX < b.x || e.clientX > b.x + b.w || e.clientY < b.y || e.clientY > b.y + b.h) return false;
+  steer = Math.max(-1, Math.min(1, (e.clientX - (b.x + b.w / 2)) / (b.w / 2) * 1.2)); throttle = +prefs.creep;
+  S.draw(steer); T.draw(throttle);
+  const m = $("tapMark"); m.hidden = false; m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px";
+  return true;
+}
+$("tap").addEventListener("pointerdown", e => { const hit = hitBox(e); if (hit) return selectBox(hit); if (sel) clearSel();
+  if (prefs.tap !== "on" || tapPid !== null || !(state === "live" || state === "weak")) return; if (tapAt(e)) { tapPid = e.pointerId; $("tap").setPointerCapture(tapPid); } });
+$("tap").addEventListener("pointermove", e => { if (e.pointerId === tapPid) tapAt(e); });
+const tapEnd = e => { if (e.pointerId !== tapPid) return; tapPid = null; $("tapMark").hidden = true; S.reset(); T.reset(); };
+$("tap").addEventListener("pointerup", tapEnd); $("tap").addEventListener("pointercancel", tapEnd);
+
+function showCarSettings() {
+  const driving = state === "live" || state === "weak";
+  document.querySelectorAll(".carBtn").forEach(b => b.disabled = !driving || !tm);
+  showCamSettings();
+  $("carNote").textContent = driving ? "Saved on the car, for every driver." : "Take control to change these.";
+  if (tm && performance.now() > carHold) for (const [k, , , , , , fmt] of CAR) { carSet[k] = tm[k]; $("car_" + k).textContent = fmt(tm[k]); }
+}
+
+// ---- max power: the car scales throttle by this; the car-side limits stay the hard cap
+function showPower() { const p = Math.round(power * 100) + "%"; $("pwrShort").textContent = p; $("pwrVal").textContent = p; $("pwrRange").value = Math.round(power * 100); }
+const sendPower = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ p: power }));
+// ---- follow and "what the car sees"
+let followTarget = "person";
+const TNAME = t => t.startsWith("colour:") ? t.slice(7) + " things" : t === "sports ball" ? "a ball" : "a " + t;
+$("followSeg").querySelectorAll("button").forEach(b => b.onclick = () => { followTarget = b.dataset.t; $("followSeg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); });
+$("followGo").onclick = () => { if ((state === "live" || state === "weak") && ws && ws.readyState === 1) { ws.send(JSON.stringify({ follow: followTarget })); closePops(); } };
+$("eyeBtn").onclick = () => { const on = $("eyeBtn").getAttribute("aria-pressed") !== "true"; $("eyeBtn").setAttribute("aria-pressed", on); ws && ws.readyState === 1 && ws.send(JSON.stringify({ detect: on })); };
+// tap a box to choose that one object, then confirm with the Follow button next to it
+let sel = null, selTimer = null;
+const COLOURS = ["red", "orange", "yellow", "green", "blue"];
+const area = o => (o.box[2] - o.box[0]) * (o.box[3] - o.box[1]);
+const straightView = () => prefs.vview === "straight" && tm && tm.vision && tm.vision.straightened;
+const boxOf = o => straightView() && o.ubox ? o.ubox : o.box;   // straightened view: the detector's own box
+function hitBox(e) {
+  const vis = tm && tm.vision; if (!vis || !vis.on || !vis.objs || !vis.objs.length) return null;
+  const b = videoBox(), u = (e.clientX - b.x) / b.w, v = (e.clientY - b.y) / b.h;
+  const hits = vis.objs.filter(o => { const s = boxOf(o); return u >= s[0] && u <= s[2] && v >= s[1] && v <= s[3]; });
+  return hits.length ? hits.reduce((a, o) => area(o) < area(a) ? o : a) : null;   // nested boxes: the smallest
+}
+function clearSel() { sel = null; $("followHere").classList.remove("show"); clearTimeout(selTimer); }
+function selectBox(o) {
+  sel = { label: o.label, box: o.box.slice() };
+  const drv = state === "live" || state === "weak", btn = $("followHere");
+  btn.textContent = drv ? "Follow this " + (COLOURS.includes(o.label) ? o.label + " thing" : o.label) : "Take control to follow";
+  btn.disabled = !drv;
+  const b = videoBox(); btn.classList.add("show");
+  const sb = boxOf(o);
+  btn.style.left = Math.max(8, Math.min(innerWidth - btn.offsetWidth - 8, b.x + sb[0] * b.w)) + "px";
+  const below = b.y + sb[3] * b.h + 8, above = b.y + sb[1] * b.h - btn.offsetHeight - 26;   // above when low, so it never covers the controls
+  btn.style.top = Math.max(60, below + btn.offsetHeight > innerHeight - 100 ? above : below) + "px";
+  clearTimeout(selTimer); selTimer = setTimeout(clearSel, 8000);
+}
+$("followHere").onclick = () => {
+  if (!sel || !(state === "live" || state === "weak") || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ follow: COLOURS.includes(sel.label) ? "colour:" + sel.label : sel.label, box: sel.box })); clearSel();
+};
+
+function drawOverlay() {   // boxes from the car's detections, mapped onto where the picture really is
+  const c = $("ov"), dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight, vis = tm && tm.vision;
+  if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (!vis || !vis.on || !vis.objs || !vis.objs.length) return;
+  const b = videoBox(), r = c.getBoundingClientRect(), followed = (vis.follow || "").replace("colour:", "");
+  const same = (p, q) => p && q && p.every((v, i) => Math.abs(v - q[i]) < 1e-3);
+  g.font = "12px 'JetBrains Mono', monospace"; g.textBaseline = "top";
+  for (const o of vis.objs) {
+    const [x0, y0, x1, y1] = boxOf(o), x = b.x - r.left + x0 * b.w, y = b.y - r.top + y0 * b.h, w = (x1 - x0) * b.w, h = (y1 - y0) * b.h;
+    const hot = vis.lock ? same(o.box, vis.lock) : o.label === followed, picked = sel && sel.label === o.label && Math.hypot(o.box[0] - sel.box[0], o.box[1] - sel.box[1]) < 0.1;
+    if (picked) { g.setLineDash([6, 4]); g.strokeStyle = "#fff"; g.lineWidth = 2.5; g.strokeRect(x - 3, y - 3, w + 6, h + 6); g.setLineDash([]); }
+    g.strokeStyle = hot ? "#4a8ad6" : "rgba(255,255,255,.9)"; g.lineWidth = hot ? 2.5 : 1.5; g.strokeRect(x, y, w, h);
+    const text = (hot && vis.lock ? "following " : "") + o.label + (o.score < 1 ? " " + Math.round(o.score * 100) + "%" : "") + (o.dist ? " ≈" + o.dist + " m" : "");
+    const tw = g.measureText(text).width + 10; g.fillStyle = hot ? "#4a8ad6" : "rgba(0,0,0,.7)"; g.fillRect(x, Math.max(0, y - 18), tw, 18);
+    g.fillStyle = "#fff"; g.fillText(text, x + 5, Math.max(0, y - 18) + 3);
+  }
+}
+
+// ---- driving modes (on the car: max power + steering sensitivity; the PS3 L1/R1 change them too)
+const MODES = { indoor: "Indoor", normal: "Normal", sport: "Sport" };
+let modeHold = 0;
+function showMode(m) { $("modeName").textContent = (MODES[m] || "Max") + " "; $("modeSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m)); }
+$("modeSeg").querySelectorAll("button").forEach(b => b.onclick = () => {
+  if (!(state === "live" || state === "weak") || !ws || ws.readyState !== 1) return;
+  showMode(b.dataset.m); modeHold = performance.now() + 700; ws.send(JSON.stringify({ mode: b.dataset.m }));
+});
+$("pwrRange").oninput = e => { power = e.target.value / 100; showPower(); sendPower(); };
+const pops = [["groupMenu", "groupBtn"], ["pop", "pwrBtn"], ["audio", "audBtn"], ["settings", "setBtn"], ["share", "shareOpen"], ["health", "healthOpen"], ["calibPop", "calOpen"]];
+function closePops() { for (const [p, b] of pops) { $(p).classList.remove("open"); $(b).setAttribute("aria-expanded", false); } }
+for (const [p, b] of pops) $(b).onclick = () => {
+  if (p === "settings") showCarSettings();
+  const open = !$(p).classList.contains("open"); closePops();
+  if (p === "groupMenu" && open) { const r = $(b).getBoundingClientRect(); $(p).style.left = r.left + "px"; $(p).style.top = (r.bottom + 6) + "px"; }
+  $(p).classList.toggle("open", open); $(b).setAttribute("aria-expanded", open);
+};
+document.addEventListener("pointerdown", e => { if (!e.target.closest(".pop, header button")) closePops(); });
+
+// ---- link: 20 Hz commands; acks give latency, loss and jitter; telemetry at 2 Hz
+const STATES = { live: ["Live", "pos"], weak: ["Link degraded", "warn"], lost: ["Link lost, halted", "neg"], watch: ["Watching", ""], denied: ["No access", "neg"], wait: ["Connecting", ""], none: ["Can't reach the car", "neg"], down: ["Car shutting down", "neg"], view: ["View only", ""] };
+const WHO = { gamepad: "PS3 is driving", phone: "Another phone is driving", follow: "Car is following" };
+let state = "wait";
+function setState(s, text) { state = s; document.body.className = s; const [txt, c] = STATES[s]; $("state").textContent = text || txt; $("state").className = "pill " + c; }
+const takeControl = () => ws && ws.readyState === 1 ? ws.send('{"take":1}') : connect();
+document.querySelectorAll(".halt").forEach(b => b.onclick = () => { halt(); if (state === "watch") takeControl(); });   // anyone watching can stop the car
+$("retake").onclick = takeControl;
+function connect() {
+  setState("wait");
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" + q + (params.get("join") === "watch" ? "&join=watch" : ""));   // join=watch: never take over a driver
+  ws.onopen = () => { opened = true; seq = 0; hist.length = 0; lastAck = performance.now(); };   // the server's role message sets the state
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data), now = performance.now();
+    if (m.tm) { tm = m.tm; return; }
+    if (m.calib) { calibReply(m.calib); return; }
+    if (m.role) { if (m.role === "viewer") setState("view"); else if (m.role === "driver") setState("live"); else if (m.role === "shutdown") setState("down"); else { halt(); setState("watch", WHO[m.by] || "Watching"); } return; }
+    lastAck = now; const h = hist.find(x => x.n === m.a);
+    if (h) { h.rtt = now - h.t; rtt = rtt === null ? h.rtt : rtt * .8 + h.rtt * .2; }
+  };
+  ws.onclose = e => {
+    halt();
+    if (e.code === 4403) return setState("denied");
+    if (state === "down") return;
+    setState(opened ? "lost" : "none"); setTimeout(connect, 1000);
+  };
+}
+setInterval(() => {
+  const now = performance.now();
+  if (ws && ws.readyState === 1) {
+    hist.push({ n: ++seq, t: now, rtt: null }); if (hist.length > 100) hist.shift();
+    ws.send(JSON.stringify({ n: seq, s: steer, t: throttle }));
+    if (now - lastAck > 600 && state === "live") setState("weak");
+    else if (now - lastAck <= 600 && state === "weak") setState("live");
+  }
+}, 50);
+connect();
+
+// ---- rendering at 10 Hz
+const sign = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+const n = (v, d = 0, unit = "") => v === null || v === undefined ? "–" : v.toFixed(d) + unit;
+function put(el, text, cls) { if (el) { el.textContent = text; el.className = "num " + (cls || ""); } }
+function render() {
+  const now = performance.now(), live = state === "live" || state === "weak" || state === "watch" || state === "view";
+  $("vs").textContent = "Steer " + sign(steer); $("vt").textContent = sign(throttle);
+  const settled = hist.filter(h => now - h.t > 500), acked = settled.filter(h => h.rtt !== null);
+  const loss = settled.length ? 100 * (settled.length - acked.length) / settled.length : null;
+  let jit = null; if (acked.length > 1) { let s = 0; for (let i = 1; i < acked.length; i++) s += Math.abs(acked[i].rtt - acked[i - 1].rtt); jit = s / (acked.length - 1); }
+  put($("lat"), live && rtt !== null ? Math.round(rtt) + " ms" : "–", live && rtt > 150 ? (rtt > LEASE ? "neg-t" : "warn-t") : "");
+  const v = {};   // every swappable value, computed whether shown or not
+  v.loss = live ? [n(loss, 1, "%"), loss > 10 ? "neg-t" : loss > 2 ? "warn-t" : ""] : ["–"];
+  v.jit = live ? [n(jit, 0, " ms"), jit > 80 ? "warn-t" : ""] : ["–"];
+  if (tm && live) {
+    $("sim").hidden = !tm.sim;
+    if (performance.now() > modeHold) { if (!$("pop").classList.contains("open") || !$("pwrRange").matches(":active")) { power = tm.power; showPower(); } showMode(tm.mode); }   // the car's values (the PS3 changes them too)
+    const drv = state === "live" || state === "weak";
+    $("modeSeg").querySelectorAll("button").forEach(b => b.disabled = !drv); $("pwrRange").disabled = !drv;
+    $("followGo").disabled = !drv;
+    if (!drv && tm.drive) { S.draw(tm.drive[0]); T.draw(tm.drive[1]); $("vs").textContent = "Steer " + sign(tm.drive[0]); $("vt").textContent = sign(tm.drive[1]); }   // watching: show what the car is doing
+    const vis = tm.vision || {};
+    const sees = !!vis.on;   // the car's state (following also turns seeing on)
+    $("eyeBtn").setAttribute("aria-pressed", sees);
+    if (state === "watch" && vis.follow) $("state").textContent = "Following " + TNAME(vis.follow) + (vis.fps ? " · " + vis.fps + " fps" : "");
+    $("followNote").textContent = vis.error && !vis.follow ? "Object detection unavailable on the car (" + vis.error.slice(0, 60) + "). Colours still work." :
+      drv ? "The car steers toward the target and stops when it is close. Halt or Take control stops following." : "Take control to start following.";
+    $("modeNote").textContent = drv ? "Sets max power and how sensitive steering is near centre. L1 / R1 on the PS3." : "Take control to change the mode.";
+    put($("fps"), tm.fps ? tm.fps + " fps" : "none", tm.fps ? "" : "warn-t");
+    if (tm.fps) { noVideoSince = null; $("nofeed").classList.add("hide"); }
+    else if ((noVideoSince = noVideoSince || now) && now - noVideoSince > 3000) $("nofeed").classList.remove("hide");
+    const bc = tm.batt_pct < 10 ? "neg-t" : tm.batt_pct < 20 ? "warn-t" : "";
+    v.bat = tm.batt === null || tm.batt === undefined ? ["No sensor"] : [tm.batt.toFixed(2) + " V", bc];
+    v.chg = tm.batt === null || tm.batt === undefined ? ["–"] : [Math.round(tm.batt_pct) + "%", bc];
+    v.pad = [tm.pad ? "PS3 on" : "None"];
+    v.wifi = [n(tm.wifi, 0, " dBm"), tm.wifi <= -80 ? "neg-t" : tm.wifi <= -70 ? "warn-t" : ""];
+    v.temp = [tm.temp === null ? "–" : prefs.temp === "f" ? (tm.temp * 9 / 5 + 32).toFixed(1) + " °F" : tm.temp.toFixed(1) + " °C", tm.temp >= 80 ? "neg-t" : tm.temp >= 70 ? "warn-t" : ""];   // thresholds stay in °C
+    v.load = [n(tm.load, 0, "%"), tm.load >= 90 ? "warn-t" : ""];
+    v.pwr = tm.pwr === null ? ["–"] : tm.pwr & 1 ? ["Undervolt", "neg-t"] : tm.pwr & 4 ? ["Throttled", "warn-t"] : tm.pwr & 0x10000 ? ["Dipped", "warn-t"] : ["OK"];
+    $("pwrAlert").hidden = !(tm.pwr & 5);   // whatever group is shown, a power problem right now is always visible
+  } else put($("fps"), "–");
+  for (const key of shown) { const [text, cls] = v[key] || ["–"]; put($("v_" + key), text, cls); }
+  if ($("settings").classList.contains("open")) showCarSettings();
+}
+setInterval(() => { render(); drawOverlay(); }, 100);
+
+// ---- video
+let streamView = null;
+const vid = $("video"), load = () => { streamView = prefs.vview; vid.src = "/video.mjpg" + q + (prefs.vview === "straight" ? "&view=straight" : "") + "&r=" + Date.now(); };
+window.reloadVideo = () => { if (streamView !== prefs.vview) load(); };
+vid.onload = () => $("nofeed").classList.add("hide"); vid.onerror = () => { $("nofeed").classList.remove("hide"); setTimeout(load, 2000); };
+load();
+
+// ---- lens calibration
+const calSend = a => ws && ws.readyState === 1 && ws.send(JSON.stringify({ calib: a }));
+$("calCap").onclick = () => { $("calMsg").textContent = "Looking for the board…"; calSend("capture"); };
+$("calFin").onclick = () => { $("calMsg").textContent = "Working out the lens (a few seconds)…"; calSend("finish"); };
+$("calRestart").onclick = () => { $("calMsg").textContent = ""; calSend("restart"); };
+let calAuto = false;
+$("calAuto").onclick = () => { if (calAuto) return calSend("stop"); calSend("auto"); $("calMsg").textContent = "Watching for the board. Move it slowly around the picture."; };
+function beep(freq) {   // a short tone on this device: you can hear each capture while holding the board
+  try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain();
+    o.frequency.value = freq; g.gain.setValueAtTime(0.15, a.currentTime); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.25);
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + 0.25); } catch (e) {}
+}
+$("calClear").onclick = () => calSend("clear");
+function calibReply(r) {
+  if (r.auto_off !== undefined) { calAuto = false; $("calAuto").textContent = "Start hands-free"; if (!r.done) return; }
+  if (r.auto) { calAuto = true; $("calAuto").textContent = "Stop hands-free"; beep(880); }
+  if (r.done) beep(1320);
+  if (r.same) { $("calMsg").textContent = "Board seen, but too close to an earlier capture. Move it somewhere new."; return; }
+  $("calMsg").textContent = r.error ? r.error : r.done ? "Calibrated. Error " + r.rms + " px (under 1 is good). Vision now uses the straightened picture." :
+    r.cleared ? "Calibration removed." : "found" in r ? (r.found ? "Board found (" + r.count + " of " + r.needed + ")." : "Board not found. Hold it flat, fully in view, a little closer.") : "";
+  if (r.count !== undefined && r.needed) $("calCount").textContent = r.count + " of " + r.needed;
+}
+
+// ---- view-only link
+const shareUrl = view => location.origin + "/?v=" + encodeURIComponent(view);
+$("shareOpen").addEventListener("click", () => { $("shareMsg").textContent = "";
+  fetch("/share" + q).then(r => r.json()).then(d => $("shareUrl").value = shareUrl(d.view)).catch(() => $("shareMsg").textContent = "Couldn't get the link."); });
+$("shareCopy").onclick = () => {
+  const done = () => $("shareMsg").textContent = "Copied.";
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText($("shareUrl").value).then(done);
+  $("shareUrl").select(); try { document.execCommand("copy"); done(); } catch (e) { $("shareMsg").textContent = "Select the link and copy it."; }   // http pages have no clipboard API
+};
+$("shareNew").onclick = () => fetch("/share" + q, { method: "POST" }).then(r => r.json()).then(d => { $("shareUrl").value = shareUrl(d.view); $("shareMsg").textContent = "New link made. The old one no longer works."; });
+
+// ---- health and logs
+const ago = s => s === null || s === undefined ? "–" : s < 60 ? Math.round(s) + " s" : s < 3600 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
+const pwrText = p => p === null || p === undefined ? "–" : [p & 1 ? "low now" : p & 4 ? "throttled now" : "OK now", p & 0x10000 ? "dipped since boot" : p & 0x40000 ? "throttled since boot" : "no dips since boot"].join(", ");
+const rowsOf = list => list.map(([k, v]) => { const r = document.createElement("div"), a = document.createElement("span"), b = document.createElement("b"); r.className = "row"; a.textContent = k; b.textContent = v; r.append(a, b); return r; });
+function loadHealth() {
+  fetch("/health" + q).then(r => r.json()).then(({ health: h, events }) => {
+    const unit = prefs.temp === "f" ? t => (t * 9 / 5 + 32).toFixed(1) + " °F" : t => t.toFixed(1) + " °C";
+    const rows = [["Car software running", ago(h.software_up_s)], ["Pi up", ago(h.pi_up_s)], ["CPU", h.temp == null ? "–" : unit(h.temp) + ", " + Math.round(h.load) + "% load"],
+      ["Memory used", h.mem_pct == null ? "–" : h.mem_pct + "%"], ["Disk free", h.disk_free_gb == null ? "–" : h.disk_free_gb + " of " + h.disk_gb + " GB"],
+      ["Wi-Fi", [h.ssid, h.wifi == null ? null : Math.round(h.wifi) + " dBm"].filter(Boolean).join(", ") || "–"], ["Address", h.ip || "–"], ["Pi power", pwrText(h.pwr)],
+      ["Driving", { gamepad: "PS3 controller", phone: "a phone", follow: "the car (following)" }[h.driver] || "nobody"], ["Also connected", h.watching + " watching, " + h.viewing + " view-only"],
+      ["Controller", h.pad ? "PS3 connected" : "not connected"], ["Camera", h.camera_on ? "on, " + h.camera_viewers + " viewer(s)" : "off (nobody watching)"],
+      ["Motor driver outages", String(h.outages)], ["Steering trim / default power", (h.trim > 0 ? "+" : "") + h.trim.toFixed(2) + " / " + Math.round(h.defpow * 100) + "%"]];
+    $("hRows").replaceChildren(...rowsOf(rows));
+    const p = h.perf || {}, ms = k => p[k] ? p[k].avg + " ms (max " + p[k].max + ")" : "–", rate = k => p[k] ? p[k].rate + "/s" : "0/s", pr = p.process || {};
+    const perfRows = [["Camera", rate("camera.frames") + " captured, " + rate("video.sent") + " sent"], ["Straightened video", rate("video.straight_frames") + ", " + ms("video.straighten")],
+      ["Vision", rate("vision.frames") + (h.camera_on ? "" : " (off)")], ["  detect", ms("vision.detect")], ["  straighten", ms("vision.straighten")], ["  decode", ms("vision.decode")],
+      ["Commands", rate("commands")], ["Motor loop", ms("motor.loop_gap")], ["Server lag", ms("server.lag")],
+      ["Car software", (pr.cpu_pct == null ? "–" : pr.cpu_pct + "% CPU") + ", " + (pr.rss_mb == null ? "–" : pr.rss_mb + " MB")]];
+    $("hPerf").replaceChildren(...rowsOf(perfRows));
+    $("hLog").replaceChildren(...(events.length ? events : [[null, "No events yet."]]).map(([t, msg]) => { const d = document.createElement("div"), tt = document.createElement("time"), m = document.createElement("span");
+      tt.textContent = t ? new Date(t * 1000).toLocaleTimeString([], { hour12: false }) : ""; m.textContent = msg; d.append(tt, m); return d; }));
+  }).catch(() => $("hRows").textContent = "Couldn't load health.");
+}
+$("healthOpen").addEventListener("click", loadHealth); $("healthRefresh").onclick = loadHealth;
+setInterval(() => { if ($("health").classList.contains("open")) loadHealth(); }, 3000);
+
+// ---- sounds
+if (!viewer) fetch("/sounds" + q).then(r => r.json()).then(d => {
+  $("keys").replaceChildren();
+  if (!d.sounds.length) { const p = document.createElement("p"); p.textContent = "No sound files yet. Add .wav files to car/sounds and redeploy."; $("keys").append(p); }
+  d.sounds.forEach(name => { const b = document.createElement("button"), a = document.createElement("span"), z = document.createElement("span"); a.textContent = name; z.textContent = "Play"; z.style.color = "var(--muted)"; b.append(a, z); b.onclick = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ sound: name })); $("keys").append(b); });
+}).catch(() => { const p = document.createElement("p"); p.textContent = "Couldn't load the sound list."; $("keys").replaceChildren(p); });
+</script>
+</body>
+</html>
