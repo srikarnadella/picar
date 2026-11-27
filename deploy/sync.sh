@@ -12,4 +12,4 @@ $RS car dashboard "$H:picar/"
 if [ "$1" = "--install" ]; then
   $RSYNC_RSH $H 'sudo tee /etc/systemd/system/picar.service >/dev/null && sudo systemctl daemon-reload && sudo systemctl enable picar' < deploy/picar.service
 fi
-$RSYNC_RSH $H 'sudo systemctl restart picar && sleep 2 && systemctl is-active picar && journalctl -u picar -n 5 --no-pager | grep "open http"'
+$RSYNC_RSH $H 'sudo systemctl restart picar && sleep 2 && systemctl is-active picar && journalctl -u picar -n 50 --no-pager | grep "open http" | tail -1'

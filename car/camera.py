@@ -1,5 +1,5 @@
 """Shared camera: captures only while at least one viewer is connected, restarts itself if it fails,
-and takes camera settings live (brightness, exposure, flip) or with a quick restart (quality)."""
+and takes camera settings live (brightness, exposure...) or with a quick restart (quality; flip on picamera2)."""
 import io
 import threading
 import time
@@ -11,7 +11,61 @@ QUALITY = {"low": (320, 240, 30), "normal": (480, 360, 30), "high": (640, 480, 3
 
 
 def pi_frames(cam):
-    import picamera  # legacy stack, on the Pi
+    """The Pi camera, on whichever stack the OS has: picamera2 (libcamera; Bullseye and later) or legacy picamera (Buster)."""
+    try:
+        import picamera2  # noqa: F401
+    except ImportError:
+        return _legacy_frames(cam)
+    return _libcamera_frames(cam)
+
+
+AWB = {"auto": "Auto", "sunlight": "Daylight", "cloudy": "Cloudy", "tungsten": "Tungsten"}
+
+
+def libcamera_controls(look):
+    """Dashboard settings (picamera's scales) -> libcamera controls. Enum values are names, resolved on the Pi.
+    brightness 20..80 (50 = normal) -> -0.6..0.6; contrast/saturation/sharpness -100..100 (0 = normal) -> 0..2 (1 = normal)."""
+    return {"Brightness": (look["cam_brightness"] - 50) / 50.0,
+            "Contrast": 1 + look["cam_contrast"] / 100.0,
+            "Saturation": 1 + look["cam_saturation"] / 100.0,
+            "Sharpness": 1 + look["cam_sharpness"] / 100.0,
+            "AeExposureMode": "Long" if look["cam_exposure"] == "night" else "Normal",
+            "AwbMode": AWB[look["cam_awb"]]}
+
+
+def _libcamera_frames(cam):
+    import cv2
+    from libcamera import Transform, controls
+    from picamera2 import Picamera2
+    w, h, q = QUALITY[cam.look["cam_quality"]]
+    flip = cam.look["cam_flip"]   # libcamera sets flips when the camera starts: a change restarts it (like quality)
+    try:
+        pc = Picamera2()
+    except Exception as e:   # installed, but the Pi is set up for the legacy camera (start_x=1): use that instead
+        log("picamera2 can't open the camera (%s); using legacy picamera" % e)
+        yield from _legacy_frames(cam)
+        return
+    try:
+        pc.configure(pc.create_video_configuration(main={"size": (w, h), "format": "RGB888"},   # RGB888 = BGR bytes, OpenCV's order
+                                                   transform=Transform(hflip=flip in ("mirror", "upside"), vflip=flip == "upside"),
+                                                   controls={"FrameRate": cam.cfg["fps"]}))
+        pc.start()
+        applied = None
+        while cam.look["cam_flip"] == flip:
+            if applied != cam.rev:  # settings changed: apply between frames, no restart
+                applied, c = cam.rev, libcamera_controls(cam.look)
+                c["AeExposureMode"] = getattr(controls.AeExposureModeEnum, c["AeExposureMode"])
+                c["AwbMode"] = getattr(controls.AwbModeEnum, c["AwbMode"])
+                pc.set_controls(c)
+            ok, jpg = cv2.imencode(".jpg", pc.capture_array("main"), [cv2.IMWRITE_JPEG_QUALITY, q])
+            if ok:
+                yield jpg.tobytes()
+    finally:
+        pc.close()   # frees the camera for the next start
+
+
+def _legacy_frames(cam):
+    import picamera  # legacy stack (Buster)
     w, h, q = QUALITY[cam.look["cam_quality"]]
     with picamera.PiCamera(resolution=(w, h), framerate=cam.cfg["fps"]) as pc:
         time.sleep(1)  # let exposure settle
@@ -92,20 +146,26 @@ class Straightened:
                     time.sleep(0.02)
                     continue
                 last = f
-                img = cv2.imdecode(np.frombuffer(f, np.uint8), cv2.IMREAD_COLOR)
                 calib = self.calib_source()
                 if not calib:
                     self.frame = f                                  # not calibrated: the normal view
                     continue
-                size = (img.shape[1], img.shape[0])
-                if und is None or und.size != size or und.calib is not calib:
-                    und = fisheye.Undistorter(calib, size)
-                    und.calib = calib
-                with perf.timer("video.straighten"):
-                    ok, jpg = cv2.imencode(".jpg", und.apply(img), [cv2.IMWRITE_JPEG_QUALITY, QUALITY[self.cam.look["cam_quality"]][2]])
-                if ok:
-                    self.frame = jpg.tobytes()
-                    perf.tick("video.straight_frames")
+                try:   # a damaged frame or a bad calibration skips this frame; it never ends the stream
+                    img = cv2.imdecode(np.frombuffer(f, np.uint8), cv2.IMREAD_COLOR)
+                    if img is None:
+                        continue
+                    size = (img.shape[1], img.shape[0])
+                    if und is None or und.size != size or und.calib is not calib:
+                        und = fisheye.Undistorter(calib, size)
+                        und.calib = calib
+                    with perf.timer("video.straighten"):
+                        ok, jpg = cv2.imencode(".jpg", und.apply(img), [cv2.IMWRITE_JPEG_QUALITY, QUALITY[self.cam.look["cam_quality"]][2]])
+                    if ok:
+                        self.frame = jpg.tobytes()
+                        perf.tick("video.straight_frames")
+                except Exception as e:
+                    log("straightened video error (skipping a frame):", e)
+                    time.sleep(0.5)
         finally:
             self.cam.release()
 

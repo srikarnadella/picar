@@ -29,7 +29,11 @@ class Governor:
     def __init__(self, drv, limits, lease_s=0.25, clock=time.monotonic, heartbeat=None, reverse_tap=None):
         self.drv, self.limits, self.lease_s = drv, limits, lease_s
         self.clock, self.heartbeat = clock, heartbeat
-        self.reverse_tap = reverse_tap   # {"power", "tap_s", "settle_s"} or None (see _esc)
+        self.reverse_tap = reverse_tap   # {"power", "tap_s", "settle_s", "rearm_s"} or None (see _esc)
+        self.forward_block = None        # callable -> what is close ahead (a label) or None; forward throttle is refused while it says so
+        self.braking = None              # what the brake is stopping for right now (for telemetry), or None
+        self._brake_logged = -1e9
+        self.forward_at = -1e9           # when forward throttle was last asked for (monotonic): the brake's detector runs around it
         self.power = 1.0                 # max-power slider: full stick = this fraction of the limits
         self.expo = 0.0                  # steering sensitivity from the driving mode (applies to every input)
         self._lock = threading.Lock()
@@ -37,7 +41,7 @@ class Governor:
         self._stamp = None               # when the last valid command arrived
         self._seq = -1
         self._written, self._wrote_at, self._fail_since = None, None, None
-        self._rev_ok, self._tap = False, None
+        self._rev_ok, self._tap, self._idle_since = False, None, None
         self.outages = 0                 # motor-driver outages since start (for Health)
         self._run = False
         self.tick()                      # neutral first, before anything else
@@ -92,6 +96,7 @@ class Governor:
             now = self.clock()
             live = self._stamp is not None and now - self._stamp <= self.lease_s
             out = self._cmd if live else (0.0, 0.0)
+            out = self._brake(out)
             if self.reverse_tap:
                 out = self._esc(out, now)
             if out != self._written or now - self._wrote_at >= REFRESH_S:
@@ -108,12 +113,30 @@ class Governor:
         if self.heartbeat and healthy:
             self.heartbeat()
 
+    def _brake(self, out):
+        """Obstacle brake: forward throttle becomes 0 while something is close ahead. Steering and reverse stay
+        yours, so you can turn or back away. Called with the lock held."""
+        if out[1] > 0:
+            self.forward_at = time.monotonic()
+        what = self.forward_block() if self.forward_block and out[1] > 0 else None
+        if what and not self.braking and self.clock() - self._brake_logged >= 3.0:   # a flickering detection must not flood the log
+            log("obstacle brake: stopped for %s ahead" % what)
+            self._brake_logged = self.clock()
+        self.braking = what
+        return (out[0], 0.0) if what else out
+
     def _esc(self, out, now):
         """Most RC ESCs treat the first reverse after forward (or after power-up) as a brake. So before a real
-        reverse: a short reverse tap, then neutral. Forward re-arms the need. Called with the lock held.
-        # ponytail: no timeout on _rev_ok; if your ESC forgets after a long neutral, clear it after N s."""
+        reverse: a short reverse tap, then neutral. Forward re-arms the need, and so does sitting at neutral for
+        rearm_s (some ESCs forget they were armed; an extra tap costs under a second). Called with the lock held."""
         steer, thr = out
         t = self.reverse_tap
+        if thr != 0:
+            self._idle_since = None
+        elif self._idle_since is None:
+            self._idle_since = now
+        if self._rev_ok and self._idle_since is not None and now - self._idle_since >= t.get("rearm_s", float("inf")):
+            self._rev_ok = False
         if thr > 0:
             self._rev_ok, self._tap = False, None
         elif thr < 0 and not self._rev_ok:

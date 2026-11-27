@@ -2,11 +2,11 @@
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=200&text=Picar&fontSize=50&fontAlignY=35&desc=Drive%20a%20Raspberry%20Pi%20RC%20car%20from%20your%20phone&descAlignY=55&fontColor=ffffff" width="100%" />
 
-**A Raspberry Pi RC car you drive from your phone: live video, a PS3 controller, and on-board object following.**
+**A Raspberry Pi RC car you drive from your phone: live video, a PS3 or Xbox controller, and on-board object following.**
 
 <!-- readme-gen:start:badges -->
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Python](https://img.shields.io/badge/python-3.7%20on%20the%20Pi-3776AB?style=flat-square&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/python-3.9%20on%20the%20Pi-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-3B-A22846?style=flat-square&logo=raspberrypi&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-65%20passing-2ea44f?style=flat-square)
 ![Offline](https://img.shields.io/badge/cloud-not%20needed-555?style=flat-square)
@@ -59,13 +59,15 @@ re-checked every second, a systemd watchdog restarts the software if it hangs, a
 
 ### 👁️ Sees and follows
 Object detection on the Pi (80 everyday classes, about 4 fps on a Pi 3B), rough distances, and colour tracking.
-Tap a box on the video to make the car follow that one person or thing, at a capped speed.
+Tap a box on the video to make the car follow that one person or thing, at a capped speed. An obstacle brake
+stops forward driving when a person or object is close ahead.
 
 </td>
 <td width="50%" valign="top">
 
-### 🎮 PS3 controller
-Pairs once over Bluetooth. Triggers drive, L1/R1 change the driving mode, and holding the PS button shuts the Pi down safely.
+### 🎮 PS3 or Xbox controller
+Pairs once over Bluetooth. Triggers drive, the bumpers change the driving mode, and holding PS (PS3) shuts the Pi down safely.
+Only known controllers are used, and only after their sticks and triggers read neutral.
 
 </td>
 </tr>
@@ -100,7 +102,7 @@ quality), a view-only share link, Pi health and an event log, a performance moni
 graph LR
     P[📱 Phone / laptop<br/>dashboard] -- "WebSocket, 20 commands/s" --> S
     M[🖥️ Picar for Mac] -- "dashboard + SSH" --> S
-    G[🎮 PS3 controller] -- Bluetooth --> S
+    G[🎮 PS3 / Xbox controller] -- Bluetooth --> S
     S[🔀 server.py<br/>Tornado] --> GOV[🛡️ governor.py<br/>250 ms lease, limits]
     GOV --> PCA[PCA9685<br/>I²C 0x40] --> ESC[Motor ESC] & SERVO[Steering servo]
     CAM[📷 Pi camera] --> S
@@ -109,7 +111,7 @@ graph LR
 ```
 <!-- readme-gen:end:architecture -->
 
-`governor.py` is the only code that moves the car. The phone, the PS3 controller and the follower all send
+`governor.py` is the only code that moves the car. The phone, the controller and the follower all send
 commands through it, and it applies the lease, the car-side limits and the max power.
 
 <!-- readme-gen:start:tree -->
@@ -122,7 +124,7 @@ commands through it, and it applies the lease, the car-side limits and the max p
 │   ├── camera.py        # shared capture, live settings, straightened stream
 │   ├── vision.py        # object detection, colour tracking, follower
 │   ├── fisheye.py       # lens calibration and straightening
-│   ├── gamepad.py       # PS3 controller
+│   ├── gamepad.py       # PS3 / Xbox controller layouts and safety rules
 │   ├── telemetry.py     # temperature, Wi-Fi, power, battery, health
 │   ├── perf.py          # performance monitor
 │   ├── selftest.py      # wheels-off motor check
@@ -142,12 +144,12 @@ commands through it, and it applies the lease, the car-side limits and the max p
 
 | Part | Notes |
 |:--|:--|
-| Raspberry Pi 3B | Raspbian Buster, Python 3.7 |
+| Raspberry Pi 3B | Raspberry Pi OS Bullseye (32-bit), Python 3.9; Buster with Python 3.7 also works |
 | PCA9685 servo driver | I²C address `0x40`; throttle on channel 0, steering on channel 1 |
 | RC chassis with ESC and steering servo | The original Donkey Car kit works |
-| Pi camera | Legacy camera stack (`picamera`) |
+| Pi camera | Legacy stack (`picamera`), or `picamera2` when installed |
 | Two batteries | One for the Pi (a USB power bank), one for the motors |
-| PS3 DualShock 3 | Optional |
+| PS3 DualShock 3 or Xbox One S / Series controller | Optional (Bluetooth) |
 | ADS1115 + voltage divider | Optional, for the battery gauge |
 
 ## Quick start
@@ -157,12 +159,13 @@ commands through it, and it applies the lease, the car-side limits and the max p
 Enable the camera and I²C (`sudo raspi-config` → Interface Options), then create the Python environment:
 
 ```bash
-python3 -m venv ~/env
-~/env/bin/pip install tornado numpy opencv-python picamera adafruit-pca9685 adafruit-gpio tflite-runtime
+sudo apt install python3-picamera python3-opencv python3-numpy python3-pil python3-tornado python3-venv wireless-tools
+python3 -m venv --system-site-packages ~/env
+~/env/bin/pip install adafruit-pca9685 tflite-runtime "numpy>=1.21.2,<2"   # numpy 2 breaks the OS's OpenCV
 ```
 
-Tested with tornado 6.2, numpy 1.21, opencv-python 4.7, picamera 1.13, Adafruit-PCA9685 1.0.1 and
-tflite-runtime 2.11. The service file expects the environment at `/home/pi/env` and the code at `/home/pi/picar`.
+Tested on Bullseye with OpenCV 4.5.1, tornado 6.1, picamera 1.13, Adafruit-PCA9685 1.0.1, tflite-runtime 2.13 and
+numpy 1.26. The service file expects the environment at `/home/pi/env` and the code at `/home/pi/picar`.
 
 ### 2. Deploy from your computer
 
@@ -203,17 +206,17 @@ Open that link on your phone (on the same Wi-Fi). Anyone with the link can drive
 
 ## Controls
 
-| Action | Phone | Keyboard | PS3 |
-|:--|:--|:--|:--|
-| Steer | Bottom-left track | A / D or ← → | Left stick |
-| Throttle | Right track | W / S or ↑ ↓ | R2 forward, L2 reverse (or right stick) |
-| Crawl toward a spot | Hold on the video | – | – |
-| Halt | **Halt** | Space | X |
-| Driving mode | Power button | – | L1 / R1 |
-| Max power | Power button → slider | – | D-pad up / down |
-| Take control | **Take control** | – | Start |
-| Follow something | Eye button, tap a box, **Follow** | – | – |
-| Shut down the Pi | – | – | Hold PS for 3 s |
+| Action | Phone | Keyboard | PS3 | Xbox |
+|:--|:--|:--|:--|:--|
+| Steer | Bottom-left track | A / D or ← → | Left stick | Left stick |
+| Throttle | Right track | W / S or ↑ ↓ | R2 forward, L2 reverse (or right stick) | RT forward, LT reverse (or right stick) |
+| Crawl toward a spot | Hold on the video | – | – | – |
+| Halt | **Halt** | Space | X | A or B |
+| Driving mode | Power button | – | L1 / R1 | LB / RB |
+| Max power | Power button → slider | – | D-pad up / down | D-pad up / down |
+| Take control | **Take control** | – | Start | Menu |
+| Follow something | Eye button, tap a box, **Follow** | – | – | – |
+| Shut down the Pi | – | – | Hold PS for 3 s | – (Settings or the Mac app) |
 
 ## Picar for Mac
 
@@ -244,7 +247,7 @@ Everything runs on a Mac with a fake camera, a fake motor driver and a fake dete
 .venv/bin/python -m unittest car/test_*.py app/test_*.py
 ```
 
-The test suite covers the governor's failsafe, the PS3 state machine, vision and following, lens calibration,
+The test suite covers the governor's failsafe, the controller layouts and safety rules, vision and following, lens calibration,
 telemetry, the Mac app, and the server end to end against a real mock server.
 
 > **Following is experimental.** It is speed-capped and stops the moment it loses the target, but test it
