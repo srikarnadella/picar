@@ -99,6 +99,32 @@ class T(unittest.TestCase):
         g.command(0, 0, 4); self.now = 1.2; g.tick()               # neutral abandons the tap
         self.assertEqual(self.drv.last[1], 0.0)
 
+    def test_reverse_tap_needed_again_after_a_long_neutral(self):
+        g = Governor(self.drv, dict(LIM), 5.0, clock=lambda: self.now, reverse_tap={"power": 0.35, "tap_s": 0.3, "settle_s": 0.5, "rearm_s": 2.0})
+        g.command(0, -0.5, 1)
+        for t in (0.0, 0.4, 0.9):                                  # tap, settle, real reverse
+            self.now = t; g.tick()
+        g.command(0, 0, 2); self.now = 1.0; g.tick()               # short neutral: still armed
+        g.command(0, -0.5, 3); self.now = 1.5; g.tick()
+        self.assertEqual(self.drv.last[1], -0.5)
+        g.command(0, 0, 4); self.now = 2.0; g.tick()               # long neutral: the ESC may have forgotten
+        self.now = 4.1; g.tick()
+        g.command(0, -0.5, 5); self.now = 4.2; g.tick()
+        self.assertEqual(self.drv.last[1], -0.35)                  # so: tap again
+
+    def test_obstacle_brake_stops_forward_only(self):
+        ahead = [None]
+        self.g.forward_block = lambda: ahead[0]
+        self.g.command(0.3, 0.8, 1); self.g.tick()
+        self.assertEqual(self.drv.last, (0.3, 0.8))
+        ahead[0] = "person"; self.g.tick()                         # mid-lease: stops at once
+        self.assertEqual(self.drv.last, (0.3, 0.0))
+        self.assertEqual(self.g.braking, "person")
+        self.g.command(-0.3, -0.5, 2); self.g.tick()               # steering and reverse still work: back away
+        self.assertEqual(self.drv.last, (-0.3, -0.5))
+        ahead[0] = None; self.g.command(0, 0.8, 3); self.g.tick()
+        self.assertEqual((self.drv.last, self.g.braking), ((0.0, 0.8), None))
+
     def test_max_power_scales_throttle_not_steering_and_ignores_garbage(self):
         self.g.set_power(0.5)
         self.g.command(0.8, 1.0, 1); self.g.tick()

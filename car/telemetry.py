@@ -3,9 +3,10 @@ With sim=True (Mac mock runs) it returns slowly varying FAKE values, and the das
 import math
 import os
 import subprocess
+import threading
 import time
 
-_pwr = [0.0, None]  # [last read time, value]: vcgencmd is a subprocess, so read it every 5 s only
+_pwr = [0.0, None]  # [last read time, value]: vcgencmd is a subprocess, so read it every 5 s, off the caller's thread
 
 
 def _read(path):
@@ -16,14 +17,19 @@ def _read(path):
         return None
 
 
+def _read_throttled():
+    try:
+        out = subprocess.check_output(["vcgencmd", "get_throttled"], timeout=1).decode()
+        _pwr[1] = int(out.split("=")[1], 16)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        _pwr[1] = None
+
+
 def _throttled():
+    """The last reading (None until the first one lands). Never blocks: the server calls this on its event loop."""
     if time.monotonic() - _pwr[0] > 5:
         _pwr[0] = time.monotonic()
-        try:
-            out = subprocess.check_output(["vcgencmd", "get_throttled"], timeout=1).decode()
-            _pwr[1] = int(out.split("=")[1], 16)
-        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-            _pwr[1] = None
+        threading.Thread(target=_read_throttled, daemon=True).start()
     return _pwr[1]
 
 
@@ -102,6 +108,9 @@ def health():
     out["disk_free_gb"], out["disk_gb"] = round(st.f_bavail * st.f_frsize / 1e9, 1), round(st.f_blocks * st.f_frsize / 1e9, 1)
     ips = _run(["hostname", "-I"])
     out["ip"] = ips.split()[0] if ips and ips.split() else None
-    wpa = _run(["sudo", "-n", "wpa_cli", "-i", "wlan0", "status"]) or ""   # wpa_cli needs root on the Pi
-    out["ssid"] = next((l[5:] for l in wpa.splitlines() if l.startswith("ssid=")), None)
+    ssid = (_run(["iwgetid", "-r"]) or "").strip()   # works with dhcpcd or NetworkManager; wpa_cli is the fallback (needs root)
+    if not ssid:
+        wpa = _run(["sudo", "-n", "wpa_cli", "-i", "wlan0", "status"]) or ""
+        ssid = next((l[5:] for l in wpa.splitlines() if l.startswith("ssid=")), "")
+    out["ssid"] = ssid or None
     return out

@@ -10,6 +10,7 @@ terminal, so you always see exactly what runs.
 """
 import base64
 import fcntl
+import json
 import os
 import pty
 import select
@@ -25,11 +26,12 @@ ROOT = os.path.dirname(HERE)
 KEY = os.path.expanduser("~/.ssh/picar_ed25519")
 STATE = os.path.expanduser("~/.picar-app")          # generated ssh config and shell setup (not your own files)
 HOST = os.environ.get("PICAR_HOST", "raspberrypi.local")
+PORT = json.load(open(os.path.join(ROOT, "car", "config.json")))["port"]
 
 # one button for what used to be four (status, Wi-Fi, disk and memory, controller); no single quotes inside
 STATUS = ('printf "software:  "; systemctl is-active picar; printf "up:        "; uptime -p; '
           'printf "cpu:       "; vcgencmd measure_temp; printf "power:     "; vcgencmd get_throttled; '
-          'printf "address:   "; hostname -I; printf "wi-fi:     "; sudo -n wpa_cli -i wlan0 status | grep ^ssid= || echo unknown; '
+          'printf "address:   "; hostname -I; printf "wi-fi:     "; iwgetid -r || echo unknown; '
           'printf "disk:      "; df -h / | tail -1; printf "memory:    "; free -m | sed -n 2p; '
           'printf "ps3:       "; [ -e /dev/input/js0 ] && echo connected || echo not connected')
 # group, label, command typed into the terminal, confirmation question (None = runs straight away)
@@ -103,7 +105,12 @@ class Terminal:
                     self.on_output(data)
             except OSError:
                 break
-        self.fd = None
+        fd, self.fd = self.fd, None
+        try:
+            os.close(fd)
+            os.waitpid(self.pid, 0)      # reap the old shell: no zombie or open pty per restart
+        except OSError:
+            pass
         self.on_output(b"\r\n[shell ended - starting a new one]\r\n")
         self.start(*self.size)          # a closed shell never leaves the panel dead
 
@@ -160,7 +167,7 @@ class Api:
         token, err = fetch_keys(self.cfg)
         if err:
             return {"ok": False, "error": err}
-        return {"ok": True, "url": "http://%s:8080/?t=%s&view=laptop&join=watch" % (HOST, token)}   # watch if someone is driving
+        return {"ok": True, "url": "http://%s:%d/?t=%s&view=laptop&join=watch" % (HOST, PORT, token)}   # watch if someone is driving
 
     def term_start(self, cols, rows):
         self.term.start(cols, rows)

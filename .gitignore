@@ -12,3 +12,4 @@ dist/
 car/calib.json
 .claude/
 context/
+pi-backup/

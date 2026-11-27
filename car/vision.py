@@ -114,6 +114,23 @@ class MockDetector:
                 {"label": "person", "score": 0.8, "box": [0.78, 0.35, 0.92, 0.75]}]
 
 
+def ahead(objs, cfg):
+    """The obstacle brake's rule: the label of something close in the car's path, else None.
+    In the path: its (straightened) box overlaps the centre band 0.5 +- lane, seen with at least min_score.
+    Close: a person whose rough distance is <= stop_m (people's height is predictable; a "typical" plant or chair
+    is not, so their distance is not trusted), or anything touching the bottom edge (on the floor right in front),
+    or filling `tall` of the picture's height.
+    Only what the detector knows (its 80 everyday kinds of thing): walls and table legs are invisible to it."""
+    for o in objs:
+        x0, y0, x1, y1 = o.get("ubox") or o["box"]
+        if o.get("score", 1.0) < cfg["min_score"] or x1 < 0.5 - cfg["lane"] or x0 > 0.5 + cfg["lane"]:
+            continue
+        dist = o.get("dist") if o["label"] == "person" else None
+        if (dist is not None and dist <= cfg["stop_m"]) or y1 >= 0.97 or y1 - y0 >= cfg["tall"]:
+            return o["label"]
+    return None
+
+
 # ---------------------------------------------------------------- following (the line follower's control loop)
 
 class Follower:
@@ -129,6 +146,7 @@ class Follower:
     def __init__(self, target, cfg):
         self.target, self.cfg = target, cfg
         self.throttle, self.prev_err, self.prev_t, self.last_seen = 0.0, 0.0, None, None
+        self.steer, self._obs = 0.0, None
 
     def step(self, obs, now):
         c = self.cfg
@@ -138,10 +156,13 @@ class Follower:
         self.last_seen = now
         x0, y0, x1, y1 = obs.get("ubox") or obs["box"]   # the straightened box when calibrated: true angle
         err = (x0 + x1) / 2 - 0.5                    # -0.5 (far left) .. +0.5 (far right)
-        dt = max(1e-3, now - self.prev_t) if self.prev_t is not None else None
-        d = (err - self.prev_err) / dt if dt else 0.0
-        self.prev_err, self.prev_t = err, now
-        steer = max(-1.0, min(1.0, c["kp"] * 2 * err + c["kd"] * d))
+        if obs is not self._obs:   # a new detection (~4/s): the D term spans detections, not 50 ms control steps
+            self._obs = obs
+            dt = max(1e-3, now - self.prev_t) if self.prev_t is not None else None
+            d = (err - self.prev_err) / dt if dt else 0.0
+            self.prev_err, self.prev_t = err, now
+            self.steer = max(-1.0, min(1.0, c["kp"] * 2 * err + c["kd"] * d))
+        steer = self.steer
         size, dist = y1 - y0, obs.get("dist")
         close = size >= c["near_size"] or y0 <= 0.03 or y1 >= 0.97 or (dist is not None and dist <= c["stop_m"])
         if close:
@@ -184,6 +205,8 @@ class Vision:
     def __init__(self, cam, cfg, mock):
         self.cam, self.cfg, self.mock = cam, cfg, mock
         self.show, self.target = False, None       # show detection boxes; follow target ("person", "colour:red")
+        self.guard, self.ahead, self.ahead_t = False, None, 0.0   # obstacle brake: watching, what is close ahead, when seen
+        self.forward_recent = lambda: True     # set by the server: the brake only needs frames while driving forward
         self.lock = None                           # follow one particular object: its last known box (tapped on screen)
         self.calib, self.correct, self._und = None, True, None   # fisheye calibration, use it, straightener for the frame size
         self.objs, self.obs, self.obs_t, self.fps = [], None, 0.0, 0.0
@@ -192,7 +215,11 @@ class Vision:
 
     @property
     def active(self):
-        return self.show or self.target is not None
+        return self.show or self.target is not None or self._braking_watch()
+
+    def _braking_watch(self):
+        """The brake needs the detector only while driving forward (and just after); no detector = it can't see."""
+        return self.guard and self.error is None and self.forward_recent()
 
     def _get_detector(self):
         if self.detector is None and self.error is None:
@@ -207,7 +234,7 @@ class Vision:
     def _run(self):
         holding, last, n, t0 = False, None, 0, time.time()
         while True:
-            if not self.active:
+            if not (self.active or (self.guard and self.error is None)):   # the brake keeps the camera warm while someone drives
                 if holding:
                     self.cam.release()
                     holding, self.objs, self.obs, self.fps = False, [], None, 0.0
@@ -216,43 +243,62 @@ class Vision:
             if not holding:
                 self.cam.acquire()
                 holding = True
+            if not self.active:   # someone drives but not forward: camera on (instant brake), no detector work
+                time.sleep(0.05)
+                continue
             f = self.cam.frame
             if f is None or f is last:
                 time.sleep(0.02)
                 continue
-            with perf.timer("vision.decode"):
-                last, img, now = f, decode_jpeg(f), time.time()
-            und = self._undistorter(img)
-            if und is not None:
-                with perf.timer("vision.straighten"):
-                    img = und.apply(img)
-            target = self.target
-            if target and target.startswith("colour:"):
-                with perf.timer("vision.colour"):
-                    o = find_colour(img, target[7:])
-                found = [o] if o else []
-            else:
-                det = self._get_detector()
-                with perf.timer("vision.detect"):
-                    found = det.detect(img) if det else []
-            for o in found:   # ubox: straightened (for steering and distance); box: on the video you see (for drawing and tapping)
-                o["ubox"] = o["box"]
-                o["dist"] = distance_m(o["label"], o["ubox"], self.cfg["vfov_deg"], und.f_frac if und else None)
-                if und is not None:
-                    o["box"] = und.to_display(o["ubox"])
-            self.objs = sorted(found, key=lambda o: -o["score"])[:6]
-            perf.tick("vision.frames")
-            pick = [o for o in self.objs if target and o["label"] == target.replace("colour:", "")]
-            lock = self.lock
-            if lock is not None:   # one chosen object: stay on it; if it is not near its last place, it is lost
-                o = pick_locked(pick, lock)
-                if o is not None:
-                    self.lock, self.obs, self.obs_t = o["box"], o, time.monotonic()
-            elif pick:             # any of that kind: the biggest (usually the nearest)
-                self.obs, self.obs_t = max(pick, key=lambda o: (o["box"][2] - o["box"][0]) * (o["box"][3] - o["box"][1])), time.monotonic()
-            n += 1
+            last = f
+            try:
+                if self._frame(f):
+                    n += 1
+            except Exception as e:   # one bad frame or a detector hiccup must never end vision (or strand the camera)
+                log("vision error (skipping a frame):", e)
+                time.sleep(0.5)
+            now = time.time()
             if now - t0 >= 2:
                 self.fps, n, t0 = round(n / (now - t0), 1), 0, now
+
+    def _frame(self, f):
+        """One camera frame: detect, place, choose the followed one, check the road ahead. False if undecodable."""
+        with perf.timer("vision.decode"):
+            img = decode_jpeg(f)
+        if img is None:
+            return False
+        und = self._undistorter(img)
+        if und is not None:
+            with perf.timer("vision.straighten"):
+                img = und.apply(img)
+        target, detected = self.target, False
+        if target and target.startswith("colour:"):
+            with perf.timer("vision.colour"):
+                o = find_colour(img, target[7:])
+            found = [o] if o else []
+        else:
+            det = self._get_detector()
+            with perf.timer("vision.detect"):
+                found = det.detect(img) if det else []
+            detected = det is not None
+        for o in found:   # ubox: straightened (for steering and distance); box: on the video you see (for drawing and tapping)
+            o["ubox"] = o["box"]
+            o["dist"] = distance_m(o["label"], o["ubox"], self.cfg["vfov_deg"], und.f_frac if und else None)
+            if und is not None:
+                o["box"] = und.to_display(o["ubox"])
+        if detected:   # the brake needs the detector; colour-following frames don't renew it (it then lapses)
+            self.ahead, self.ahead_t = ahead(found, self.cfg["brake"]), time.monotonic()
+        self.objs = sorted(found, key=lambda o: -o["score"])[:6]
+        perf.tick("vision.frames")
+        pick = [o for o in self.objs if target and o["label"] == target.replace("colour:", "")]
+        lock = self.lock
+        if lock is not None:   # one chosen object: stay on it; if it is not near its last place, it is lost
+            o = pick_locked(pick, lock)
+            if o is not None:
+                self.lock, self.obs, self.obs_t = o["box"], o, time.monotonic()
+        elif pick:             # any of that kind: the biggest (usually the nearest)
+            self.obs, self.obs_t = max(pick, key=lambda o: (o["box"][2] - o["box"][0]) * (o["box"][3] - o["box"][1])), time.monotonic()
+        return True
 
     def _undistorter(self, img):
         if not (self.calib and self.correct):
@@ -265,11 +311,19 @@ class Vision:
     def set_calibration(self, calib):
         self.calib, self._und = calib, None
 
+    def obstacle(self):
+        """What is close ahead, from a recent enough detection, else None (the governor's forward_block).
+        # ponytail: a stale detector (no frame for max_age) means no brake, not a stopped car; the lease and
+        # the driver remain the safety net. Make it fail-closed if the brake must be guaranteed."""
+        if self.guard and self.ahead and time.monotonic() - self.ahead_t <= self.cfg["brake"]["max_age"]:
+            return self.ahead
+        return None
+
     def observation(self, max_age):
         """The followed target, if seen recently enough."""
         return self.obs if self.obs is not None and time.monotonic() - self.obs_t <= max_age else None
 
     def snapshot(self):
-        return {"on": self.active, "fps": self.fps, "objs": self.objs,   # box: on the camera view; ubox: on the straightened view
+        return {"on": self.show or self.target is not None, "guard": self.guard, "ahead": self.obstacle(), "fps": self.fps, "objs": self.objs,   # box: on the camera view; ubox: on the straightened view
                 "follow": self.target, "error": self.error, "straightened": bool(self.calib and self.correct),
                 "lock": self.lock if self.target else None}

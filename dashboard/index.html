@@ -113,13 +113,25 @@
   #hLog { font-size:11.5px; line-height:17px; margin-top:6px; color:#d6d6d8; }
   #hLog div { display:flex; gap:10px; } #hLog time { color:var(--muted); flex:none; }
   #health h2 { display:flex; justify-content:space-between; align-items:center; } #health h2 button { height:28px; font-size:12px; }
-  #settings h2.sub { margin-top:16px; } #carNote { margin:2px 0 4px; font-size:12px; }
+  /* settings sections: native dropdowns (one open at a time where the browser supports name=) */
+  .grp { border-top:1px solid #2a292e; } #settings > .grp:first-of-type { margin-top:8px; }
+  .grp > summary { list-style:none; display:flex; justify-content:space-between; align-items:center; min-height:46px; font-weight:600; cursor:pointer; touch-action:manipulation; }
+  .grp > summary::-webkit-details-marker { display:none; }
+  .grp > summary::after { content:""; border:4px solid transparent; border-top:5px solid var(--muted); margin-top:5px; }
+  .grp[open] > summary::after { transform:rotate(180deg); margin-top:-5px; }
+  .grp[open] > summary { color:var(--accent); }
+  .grp[open] { padding-bottom:8px; }
+  .grp > summary:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+  #carNote { margin:0 0 4px; font-size:12px; }
   .step { display:flex; align-items:center; gap:4px; } .step b { min-width:58px; text-align:center; font-size:13px; font-weight:500; }
   .step button { width:36px; height:32px; padding:0; border-radius:4px; background:var(--raised); }
   .step button:disabled { opacity:.35; cursor:default; }
   /* laptop view (mouse/trackpad + wide screen, or ?view=laptop): every group at once, keyboard guide */
   .allgroups #groupBtn { display:none; }
   .gsep { width:1px; height:28px; background:rgba(255,255,255,.16); flex:none; }
+  #brakeBanner { position:fixed; z-index:2; left:50%; top:calc(var(--bar) + 54px); transform:translateX(-50%); max-width:calc(100vw - 32px);
+                 background:var(--negative); color:#000; font-weight:600; padding:10px 16px; border-radius:6px; text-align:center; }
+  #brakeBanner span { display:block; font-weight:400; font-size:12px; }
   #keyhint { position:fixed; z-index:1; left:50%; top:calc(var(--bar) + 10px); transform:translateX(-50%); display:none; font-size:12px; color:#d6d6d8; background:rgba(0,0,0,.6); padding:6px 10px; border-radius:4px; white-space:nowrap; }
   .laptop #keyhint { display:block; }
   .allgroups #vals { overflow:visible; }
@@ -142,8 +154,9 @@
 <header id="hdr">
   <div class="brand"><svg viewBox="0 0 20 20" fill="none" stroke="#4a8ad6" stroke-width="1.5" aria-hidden="true"><rect x="6" y="2" width="8" height="16" rx="2"/><path d="M3 5v4M17 5v4M3 12v4M17 12v4"/></svg><h1>PICAR-01</h1></div>
   <span class="pill" id="state" role="status" aria-live="polite">Connecting</span><span class="pill warn" id="sim" hidden title="Mock mode: values are simulated">Sim</span>
-  <span class="pill neg" id="pwrAlert" hidden>Pi power low</span>
+  <span class="pill neg" id="pwrAlert" hidden>Pi power low</span><span class="pill neg" id="brakeAlert" role="alert" hidden></span>
   <div id="info">
+    <span class="stat"><span>Driving</span><b id="drv">–</b></span>
     <span class="stat"><span>Latency</span><b class="num" id="lat">–</b></span>
     <span class="stat"><span>Video</span><b class="num" id="fps">–</b></span>
     <button id="groupBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="groupMenu">Network</button>
@@ -160,13 +173,22 @@
 <div class="track" id="steer" role="slider" aria-label="Steering" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span class="readout num" id="vs">Steer +0.00</span><span class="lb" style="left:12px;top:50%;transform:translateY(-50%)">L</span><span class="lb" style="right:12px;top:50%;transform:translateY(-50%)">R</span><div class="line" id="steerLine"></div><div class="knob" id="steerKnob"></div><div class="zone" id="steerZone"></div></div>
 <div class="track" id="thr" role="slider" aria-label="Throttle" aria-orientation="vertical" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span class="readout num" id="vt">+0.00</span><span class="lb" style="top:8px;left:50%;transform:translateX(-50%)">Fwd</span><span class="lb" style="bottom:8px;left:50%;transform:translateX(-50%)">Rev</span><div class="line" id="thrLine"></div><div class="knob" id="thrKnob"></div><div class="zone" id="thrZone"></div></div>
 
+<div id="brakeBanner" role="alert" hidden><b id="brakeWhat"></b><span>Forward is blocked; steer or reverse away. Turn it off in Settings › Car › Obstacle brake.</span></div>
 <div id="keyhint"><b class="num">W S</b> or <b class="num">↑ ↓</b> throttle · <b class="num">A D</b> or <b class="num">← →</b> steer · <b class="num">Space</b> halt</div>
-<section id="settings" class="pop" aria-label="Settings"><h2>Settings</h2><div id="setRows"></div>
-  <div class="fullonly"><h2 class="sub">Car</h2><p id="carNote">Saved on the car, for every driver.</p><div id="carRows"></div>
-  <h2 class="sub">Camera</h2><div id="camRows"></div>
-  <h2 class="sub">More</h2>
+<section id="settings" class="pop" aria-label="Settings"><h2>Settings</h2>
+  <details class="grp" name="settings"><summary>This device</summary><div id="setRows"></div></details>
+  <div class="fullonly">
+  <details class="grp" name="settings"><summary>Car</summary><p id="carNote">Saved on the car, for every driver.</p><div id="carRows"></div></details>
+  <details class="grp" name="settings"><summary>Camera</summary><div id="camRows"></div></details>
+  <details class="grp" name="settings"><summary>More</summary>
   <div class="set"><span>View-only link</span><button id="shareOpen">Get link</button></div>
-  <div class="set"><span>Health and logs</span><button id="healthOpen">Open</button></div></div></section>
+  <div class="set"><span>Health and logs</span><button id="healthOpen">Open</button></div>
+  <div class="set"><span>Turn off the car</span><button id="offOpen">Turn off…</button></div></details></div></section>
+<section id="offPop" class="pop wide" aria-label="Turn off the car"><h2>Turn off the car?</h2>
+  <p>The car stops (motors to neutral), the car software ends, the controller turns off and the Pi shuts down.
+     Everyone connected is disconnected. To start it again, unplug the Pi's power and plug it back in.</p>
+  <div class="btns" style="margin-top:12px"><button id="offGo" class="halt">Turn off</button><button id="offCancel">Cancel</button></div>
+  <p id="offMsg"></p></section>
 <section id="share" class="pop wide" aria-label="View-only link"><h2>View-only link</h2>
   <p>Anyone with this link sees the video and the data. They can't drive, stop the car, change settings or play sounds.</p>
   <input id="shareUrl" readonly aria-label="View-only link"><div class="btns"><button id="shareCopy">Copy</button><button id="shareNew">New link</button></div><p id="shareMsg"></p></section>
@@ -184,13 +206,13 @@
 <section id="groupMenu" class="pop" role="menu" aria-label="Header values"></section>
 <section id="pop" class="pop" aria-label="Driving mode and max power"><h2>Driving mode</h2>
   <div class="seg" id="modeSeg" style="margin:8px 0 4px"><button data-m="indoor">Indoor</button><button data-m="normal">Normal</button><button data-m="sport">Sport</button></div>
-  <p id="modeNote">Sets max power and how sensitive steering is near centre. L1 / R1 on the PS3.</p>
+  <p id="modeNote">Sets max power and how sensitive steering is near centre. Bumpers (L1 / R1, LB / RB) on a controller.</p>
   <h2 style="margin-top:14px">Follow</h2>
   <div class="seg" id="followSeg"><button data-t="person" aria-pressed="true">Person</button><button data-t="dog">Dog</button><button data-t="cat">Cat</button><button data-t="sports ball">Ball</button><button data-t="colour:red">Red</button><button data-t="colour:green">Green</button><button data-t="colour:blue">Blue</button><button data-t="colour:yellow">Yellow</button></div>
   <div class="rowbtn"><button id="followGo">Start following</button></div>
   <p id="followNote">The car steers toward the target and stops when it is close. Halt or Take control stops following.</p>
   <h2 style="margin-top:14px">Max power</h2><div class="num" id="pwrVal">100%</div>
-  <input type="range" id="pwrRange" min="25" max="100" step="5" value="100" aria-label="Max power">
+  <input type="range" id="pwrRange" min="10" max="100" step="5" value="100" aria-label="Max power">
   <p>Full throttle equals this much of the car's power. The car enforces it.</p></section>
 <section id="audio" class="pop" aria-label="Sounds"><h2>Sounds</h2><div id="keys"></div></section>
 
@@ -311,7 +333,7 @@ addEventListener("resize", () => { if ((innerWidth >= 1500) !== wideNow) { wideN
 let carSet = { trim: null, defpow: null }, carHold = 0;   // carHold: keep the value just tapped until the car confirms it
 const CAR = [   // [telemetry key, server key, label, step, min, max, format]
   ["trim", "steer_trim", "Steering trim", 0.01, -0.3, 0.3, v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2)],
-  ["defpow", "default_power", "Default max power", 0.05, 0.25, 1, v => Math.round(v * 100) + "%"],
+  ["defpow", "default_power", "Default max power", 0.05, 0.1, 1, v => Math.round(v * 100) + "%"],
 ];
 $("carRows").replaceChildren(...CAR.map(([k, key, label, step, lo, hi, fmt]) => {
   const row = document.createElement("div"), l = document.createElement("span"), box = document.createElement("div"), val = document.createElement("b");
@@ -320,6 +342,14 @@ $("carRows").replaceChildren(...CAR.map(([k, key, label, step, lo, hi, fmt]) => 
     b.onclick = () => { if (carSet[k] === null) return; const v = Math.round(Math.max(lo, Math.min(hi, carSet[k] + dir * step)) * 1000) / 1000;
       carSet[k] = v; val.textContent = fmt(v); carHold = performance.now() + 1200; ws && ws.readyState === 1 && ws.send(JSON.stringify({ set: { [key]: v } })); }; return b; };
   box.append(btn("−", -1), val, btn("+", 1)); row.append(l, box); return row; }));
+(() => {   // obstacle brake: the car refuses forward throttle while something is close ahead
+  const row = document.createElement("div"), l = document.createElement("span"), seg = document.createElement("div");
+  row.className = "set"; l.textContent = "Obstacle brake"; seg.className = "seg"; seg.id = "brakeSeg";
+  [["on", "On"], ["off", "Off"]].forEach(([v, t]) => { const b = document.createElement("button"); b.textContent = t; b.dataset.v = v; b.className = "carBtn";
+    b.onclick = () => { seg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); carHold = performance.now() + 1200;
+      ws && ws.readyState === 1 && ws.send(JSON.stringify({ set: { obstacle_brake: v } })); }; seg.append(b); });
+  row.append(l, seg); $("carRows").append(row);
+})();
 // ---- camera settings (saved on the car; driver only, since everyone sees the result)
 const CAM_STEP = [["brightness", "Brightness", 5, 20, 80, 50], ["saturation", "Saturation", 10, -100, 100, 0],
                   ["contrast", "Contrast", 10, -100, 100, 0], ["sharpness", "Sharpness", 10, -100, 100, 0]];
@@ -402,7 +432,8 @@ function showCarSettings() {
   document.querySelectorAll(".carBtn").forEach(b => b.disabled = !driving || !tm);
   showCamSettings();
   $("carNote").textContent = driving ? "Saved on the car, for every driver." : "Take control to change these.";
-  if (tm && performance.now() > carHold) for (const [k, , , , , , fmt] of CAR) { carSet[k] = tm[k]; $("car_" + k).textContent = fmt(tm[k]); }
+  if (tm && performance.now() > carHold) { for (const [k, , , , , , fmt] of CAR) { carSet[k] = tm[k]; $("car_" + k).textContent = fmt(tm[k]); }
+    $("brakeSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === tm.obstacle_brake)); }
 }
 
 // ---- max power: the car scales throttle by this; the car-side limits stay the hard cap
@@ -463,7 +494,7 @@ function drawOverlay() {   // boxes from the car's detections, mapped onto where
   }
 }
 
-// ---- driving modes (on the car: max power + steering sensitivity; the PS3 L1/R1 change them too)
+// ---- driving modes (on the car: max power + steering sensitivity; a controller's bumpers change them too)
 const MODES = { indoor: "Indoor", normal: "Normal", sport: "Sport" };
 let modeHold = 0;
 function showMode(m) { $("modeName").textContent = (MODES[m] || "Max") + " "; $("modeSeg").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m)); }
@@ -472,7 +503,7 @@ $("modeSeg").querySelectorAll("button").forEach(b => b.onclick = () => {
   showMode(b.dataset.m); modeHold = performance.now() + 700; ws.send(JSON.stringify({ mode: b.dataset.m }));
 });
 $("pwrRange").oninput = e => { power = e.target.value / 100; showPower(); sendPower(); };
-const pops = [["groupMenu", "groupBtn"], ["pop", "pwrBtn"], ["audio", "audBtn"], ["settings", "setBtn"], ["share", "shareOpen"], ["health", "healthOpen"], ["calibPop", "calOpen"]];
+const pops = [["groupMenu", "groupBtn"], ["pop", "pwrBtn"], ["audio", "audBtn"], ["settings", "setBtn"], ["share", "shareOpen"], ["health", "healthOpen"], ["calibPop", "calOpen"], ["offPop", "offOpen"]];
 function closePops() { for (const [p, b] of pops) { $(p).classList.remove("open"); $(b).setAttribute("aria-expanded", false); } }
 for (const [p, b] of pops) $(b).onclick = () => {
   if (p === "settings") showCarSettings();
@@ -483,22 +514,31 @@ for (const [p, b] of pops) $(b).onclick = () => {
 document.addEventListener("pointerdown", e => { if (!e.target.closest(".pop, header button")) closePops(); });
 
 // ---- link: 20 Hz commands; acks give latency, loss and jitter; telemetry at 2 Hz
-const STATES = { live: ["Live", "pos"], weak: ["Link degraded", "warn"], lost: ["Link lost, halted", "neg"], watch: ["Watching", ""], denied: ["No access", "neg"], wait: ["Connecting", ""], none: ["Can't reach the car", "neg"], down: ["Car shutting down", "neg"], view: ["View only", ""] };
-const WHO = { gamepad: "PS3 is driving", phone: "Another phone is driving", follow: "Car is following" };
+const STATES = { live: ["Live", "pos"], weak: ["Link degraded", "warn"], lost: ["Link lost, halted", "neg"], watch: ["Watching", ""], denied: ["No access", "neg"], wait: ["Connecting", ""], none: ["Can't reach the car", "neg"], down: ["Car turning off", "neg"], view: ["View only", ""] };
+const WHO = { gamepad: "Controller is driving", phone: "Another phone is driving", follow: "Car is following" };   // fallback for an older car
+let driverWho = null;   // who drives, from the car: "Phone", "Laptop", "Xbox controller", "Car (following)", or null
 let state = "wait";
-function setState(s, text) { state = s; document.body.className = s; const [txt, c] = STATES[s]; $("state").textContent = text || txt; $("state").className = "pill " + c; }
+function showDriver() {   // header "Driving": You, Phone, Laptop, Xbox controller, Car (following), Nobody
+  const you = state === "live" || state === "weak";
+  put($("drv"), you ? "You" : driverWho || (state === "wait" || state === "none" || state === "lost" ? "–" : "Nobody"), you ? "" : driverWho ? "warn-t" : "");
+  $("drv").classList.remove("num");
+}
+function setState(s, text) { state = s; document.body.className = s; const [txt, c] = STATES[s]; $("state").textContent = text || txt; $("state").className = "pill " + c; showDriver(); }
 const takeControl = () => ws && ws.readyState === 1 ? ws.send('{"take":1}') : connect();
 document.querySelectorAll(".halt").forEach(b => b.onclick = () => { halt(); if (state === "watch") takeControl(); });   // anyone watching can stop the car
 $("retake").onclick = takeControl;
 function connect() {
   setState("wait");
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" + q + (params.get("join") === "watch" ? "&join=watch" : ""));   // join=watch: never take over a driver
+  const join = document.hidden ? "&join=never" : params.get("join") === "watch" ? "&join=watch" : "";   // watch: never take over a driver; never: a hidden page never takes the car
+  const dev = "&dev=" + (view === "laptop" ? "laptop" : "phone");   // so everyone sees "Laptop" or "Phone" when this page drives
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" + q + join + dev);
   ws.onopen = () => { opened = true; seq = 0; hist.length = 0; lastAck = performance.now(); };   // the server's role message sets the state
   ws.onmessage = e => {
     const m = JSON.parse(e.data), now = performance.now();
     if (m.tm) { tm = m.tm; return; }
     if (m.calib) { calibReply(m.calib); return; }
-    if (m.role) { if (m.role === "viewer") setState("view"); else if (m.role === "driver") setState("live"); else if (m.role === "shutdown") setState("down"); else { halt(); setState("watch", WHO[m.by] || "Watching"); } return; }
+    if (m.role) { if (m.role === "viewer") setState("view"); else if (m.role === "driver") setState("live"); else if (m.role === "shutdown") setState("down"); else { halt(); setState("watch", m.who ? m.who + " is driving" : WHO[m.by] || "Watching"); }
+      if ("who" in m) { driverWho = m.who; showDriver(); } return; }
     lastAck = now; const h = hist.find(x => x.n === m.a);
     if (h) { h.rtt = now - h.t; rtt = rtt === null ? h.rtt : rtt * .8 + h.rtt * .2; }
   };
@@ -536,7 +576,7 @@ function render() {
   v.jit = live ? [n(jit, 0, " ms"), jit > 80 ? "warn-t" : ""] : ["–"];
   if (tm && live) {
     $("sim").hidden = !tm.sim;
-    if (performance.now() > modeHold) { if (!$("pop").classList.contains("open") || !$("pwrRange").matches(":active")) { power = tm.power; showPower(); } showMode(tm.mode); }   // the car's values (the PS3 changes them too)
+    if (performance.now() > modeHold) { if (!$("pop").classList.contains("open") || !$("pwrRange").matches(":active")) { power = tm.power; showPower(); } showMode(tm.mode); }   // the car's values (a controller changes them too)
     const drv = state === "live" || state === "weak";
     $("modeSeg").querySelectorAll("button").forEach(b => b.disabled = !drv); $("pwrRange").disabled = !drv;
     $("followGo").disabled = !drv;
@@ -547,20 +587,24 @@ function render() {
     if (state === "watch" && vis.follow) $("state").textContent = "Following " + TNAME(vis.follow) + (vis.fps ? " · " + vis.fps + " fps" : "");
     $("followNote").textContent = vis.error && !vis.follow ? "Object detection unavailable on the car (" + vis.error.slice(0, 60) + "). Colours still work." :
       drv ? "The car steers toward the target and stops when it is close. Halt or Take control stops following." : "Take control to start following.";
-    $("modeNote").textContent = drv ? "Sets max power and how sensitive steering is near centre. L1 / R1 on the PS3." : "Take control to change the mode.";
+    $("modeNote").textContent = drv ? "Sets max power and how sensitive steering is near centre. Bumpers (L1 / R1, LB / RB) on a controller." : "Take control to change the mode.";
     put($("fps"), tm.fps ? tm.fps + " fps" : "none", tm.fps ? "" : "warn-t");
     if (tm.fps) { noVideoSince = null; $("nofeed").classList.add("hide"); }
     else if ((noVideoSince = noVideoSince || now) && now - noVideoSince > 3000) $("nofeed").classList.remove("hide");
     const bc = tm.batt_pct < 10 ? "neg-t" : tm.batt_pct < 20 ? "warn-t" : "";
     v.bat = tm.batt === null || tm.batt === undefined ? ["No sensor"] : [tm.batt.toFixed(2) + " V", bc];
     v.chg = tm.batt === null || tm.batt === undefined ? ["–"] : [Math.round(tm.batt_pct) + "%", bc];
-    v.pad = [tm.pad ? "PS3 on" : "None"];
+    v.pad = [tm.pad ? tm.pad.replace(" controller", "") + " on" : "None"];
     v.wifi = [n(tm.wifi, 0, " dBm"), tm.wifi <= -80 ? "neg-t" : tm.wifi <= -70 ? "warn-t" : ""];
     v.temp = [tm.temp === null ? "–" : prefs.temp === "f" ? (tm.temp * 9 / 5 + 32).toFixed(1) + " °F" : tm.temp.toFixed(1) + " °C", tm.temp >= 80 ? "neg-t" : tm.temp >= 70 ? "warn-t" : ""];   // thresholds stay in °C
     v.load = [n(tm.load, 0, "%"), tm.load >= 90 ? "warn-t" : ""];
     v.pwr = tm.pwr === null ? ["–"] : tm.pwr & 1 ? ["Undervolt", "neg-t"] : tm.pwr & 4 ? ["Throttled", "warn-t"] : tm.pwr & 0x10000 ? ["Dipped", "warn-t"] : ["OK"];
-    $("pwrAlert").hidden = !(tm.pwr & 5);   // whatever group is shown, a power problem right now is always visible
-  } else put($("fps"), "–");
+    if ("driver" in tm) { driverWho = tm.driver; }
+    showDriver();
+    $("pwrAlert").hidden = !(tm.pwr & 5);
+    $("brakeAlert").hidden = !tm.brake; if (tm.brake) $("brakeAlert").textContent = "Braking: " + tm.brake + " ahead";
+    $("brakeBanner").hidden = !tm.brake; if (tm.brake) $("brakeWhat").textContent = "Obstacle brake: " + tm.brake + " ahead";   // whatever group is shown, a power problem right now is always visible
+  } else { put($("fps"), "–"); $("brakeAlert").hidden = true; $("brakeBanner").hidden = true; }
   for (const key of shown) { const [text, cls] = v[key] || ["–"]; put($("v_" + key), text, cls); }
   if ($("settings").classList.contains("open")) showCarSettings();
 }
@@ -607,6 +651,15 @@ $("shareCopy").onclick = () => {
 };
 $("shareNew").onclick = () => fetch("/share" + q, { method: "POST" }).then(r => r.json()).then(d => { $("shareUrl").value = shareUrl(d.view); $("shareMsg").textContent = "New link made. The old one no longer works."; });
 
+// ---- turn the car off (Settings, confirmed): neutral, car software ends, controller off, Pi shuts down
+$("offCancel").onclick = closePops;
+$("offGo").onclick = () => {
+  if (!ws || ws.readyState !== 1) { $("offMsg").textContent = "Not connected to the car."; return; }
+  halt(); ws.send(JSON.stringify({ power: "off" }));
+  $("offMsg").textContent = "Turning off. Wait until the Pi's green light stops blinking (about 20 s) before unplugging.";
+  $("offGo").disabled = true;
+};
+
 // ---- health and logs
 const ago = s => s === null || s === undefined ? "–" : s < 60 ? Math.round(s) + " s" : s < 3600 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 const pwrText = p => p === null || p === undefined ? "–" : [p & 1 ? "low now" : p & 4 ? "throttled now" : "OK now", p & 0x10000 ? "dipped since boot" : p & 0x40000 ? "throttled since boot" : "no dips since boot"].join(", ");
@@ -617,8 +670,8 @@ function loadHealth() {
     const rows = [["Car software running", ago(h.software_up_s)], ["Pi up", ago(h.pi_up_s)], ["CPU", h.temp == null ? "–" : unit(h.temp) + ", " + Math.round(h.load) + "% load"],
       ["Memory used", h.mem_pct == null ? "–" : h.mem_pct + "%"], ["Disk free", h.disk_free_gb == null ? "–" : h.disk_free_gb + " of " + h.disk_gb + " GB"],
       ["Wi-Fi", [h.ssid, h.wifi == null ? null : Math.round(h.wifi) + " dBm"].filter(Boolean).join(", ") || "–"], ["Address", h.ip || "–"], ["Pi power", pwrText(h.pwr)],
-      ["Driving", { gamepad: "PS3 controller", phone: "a phone", follow: "the car (following)" }[h.driver] || "nobody"], ["Also connected", h.watching + " watching, " + h.viewing + " view-only"],
-      ["Controller", h.pad ? "PS3 connected" : "not connected"], ["Camera", h.camera_on ? "on, " + h.camera_viewers + " viewer(s)" : "off (nobody watching)"],
+      ["Driving", h.driver_label || { gamepad: h.pad || "a controller", phone: "a phone", follow: "the car (following)" }[h.driver] || "nobody"], ["Also connected", h.watching + " watching, " + h.viewing + " view-only"],
+      ["Controller", h.pad ? h.pad + " connected" : "not connected"], ["Camera", h.camera_on ? "on, " + h.camera_viewers + " viewer(s)" : "off (nobody watching)"],
       ["Motor driver outages", String(h.outages)], ["Steering trim / default power", (h.trim > 0 ? "+" : "") + h.trim.toFixed(2) + " / " + Math.round(h.defpow * 100) + "%"]];
     $("hRows").replaceChildren(...rowsOf(rows));
     const p = h.perf || {}, ms = k => p[k] ? p[k].avg + " ms (max " + p[k].max + ")" : "–", rate = k => p[k] ? p[k].rate + "/s" : "0/s", pr = p.process || {};

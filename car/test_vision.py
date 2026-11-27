@@ -67,10 +67,39 @@ class Follow(unittest.TestCase):
         _, t = vision.Follower("person", CFG).step(self.obs(0.9), 0.0)
         self.assertLessEqual(t, 0.4 * 0.4)
 
+    def test_steering_derivative_spans_detections_not_control_steps(self):
+        cfg = dict(CFG, kd=0.1)
+        f, a, b = vision.Follower("person", cfg), self.obs(0.5), self.obs(0.6)
+        for i in range(6):                                  # the same detection, re-read at 20 Hz for 0.3 s
+            f.step(a, i * 0.05)
+        s1 = f.step(b, 0.3)[0]                              # the next detection, 0.3 s after the first
+        self.assertAlmostEqual(s1, cfg["kp"] * 2 * 0.1 + 0.1 * 0.1 / 0.3, places=3)
+        self.assertEqual(f.step(b, 0.35)[0], s1)            # held until the next detection, no spike-and-drop
+
     def test_not_seen_stops_at_once(self):
         f = vision.Follower("person", CFG)
         self.assertGreater(f.step(self.obs(0.5), 0.0)[1], 0)
         self.assertEqual(f.step(None, 0.05), (0.0, 0.0))  # one missed detection: stopped, no coasting
+
+
+class Brake(unittest.TestCase):
+    CFG = {"stop_m": 1.2, "lane": 0.2, "tall": 0.8, "min_score": 0.6}
+
+    def o(self, box, dist=None, label="person", score=0.9):
+        return {"label": label, "box": box, "dist": dist, "score": score}
+
+    def test_close_things_in_the_path_brake(self):
+        for o in (self.o([0.4, 0.3, 0.6, 0.7], dist=1.0),                 # near enough by distance
+                  self.o([0.45, 0.6, 0.55, 0.99], label="cup"),           # on the floor right in front
+                  self.o([0.2, 0.05, 0.9, 0.9], label="couch")):          # fills the picture
+            self.assertEqual(vision.ahead([o], self.CFG), o["label"], o)
+
+    def test_far_or_off_to_the_side_does_not(self):
+        for o in (self.o([0.4, 0.3, 0.6, 0.7], dist=3.0),                 # far
+                  self.o([0.75, 0.3, 0.95, 0.99], dist=0.8),              # close but beside the path
+                  self.o([0.53, 0.25, 0.65, 0.49], dist=1.0, label="potted plant"),   # a "typical size" guess: not trusted
+                  self.o([0.4, 0.3, 0.6, 0.99], score=0.57)):             # not sure enough
+            self.assertIsNone(vision.ahead([o], self.CFG), o)
 
 
 if __name__ == "__main__":

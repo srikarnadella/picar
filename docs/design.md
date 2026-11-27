@@ -5,16 +5,16 @@ Works with no internet and no AI. Updated 2026-11-23 to match the code.
 
 ## Hardware (verified on the car)
 
-- Raspberry Pi 3B Rev 1.2, Raspbian 10 (Buster, end of life), Python 3.7.3. Pi on a USB power bank,
+- Raspberry Pi 3B Rev 1.2, Raspbian 11 (Bullseye, upgraded in place from Buster), Python 3.9.2. Pi on a USB power bank,
   motors on the RC battery.
 - PCA9685 at I2C `0x40`, 60 Hz. Steering servo on channel 1, ESC on channel 0.
-- Camera: OV5647 (Pi Camera v1), wide-angle fisheye, legacy `picamera` 1.13.
-- All Python packages are at the newest version that supports Python 3.7.
+- Camera: OV5647 (Pi Camera v1), wide-angle fisheye, legacy `picamera` 1.13 (`picamera2` is used instead when installed).
+- Code stays Python 3.7 compatible (it still runs on Buster); OS packages for OpenCV/tornado, pip for the rest.
 
 ## Code
 
 ```
-car/governor.py   the ONLY code that moves the car: lease failsafe, limits, max power, ESC reverse tap
+car/governor.py   the ONLY code that moves the car: lease failsafe, limits, max power, obstacle brake, ESC reverse tap
 car/drivers.py    pulse math (calibration + dead zone), Pca9685 driver (detects chip resets), Mock
 car/server.py     tornado: dashboard, /ws control, /video.mjpg, /sounds, telemetry, systemd watchdog
 car/camera.py     one shared capture, runs only while watched, restarts itself on failure
@@ -22,7 +22,7 @@ car/camera.py     (also) Straightened: the fisheye-corrected video stream, made 
 car/vision.py     detection (TFLite SSD-MobileNet), colour tracking, follower (stops at once when the target is lost)
 car/fisheye.py    lens calibration (checkerboard, hands-free) and straightening; car/calib.json is made on the car
 car/perf.py       performance monitor: timings and rates per part, last 10 s (Settings > Health)
-car/gamepad.py    PS3 controller (Linux joystick API)
+car/gamepad.py    PS3 / Xbox controllers (Linux joystick API): known layouts only, neutral before driving
 car/telemetry.py  CPU temp/load, Wi-Fi dBm, supply flags, battery (ADS1115), health (sim values with --mock)
 car/sounds.py     car/sounds/*.wav through aplay
 car/stop.py       writes neutral; systemd runs it after every stop or crash
@@ -43,8 +43,21 @@ deploy/           sync.sh (shows changes, asks, syncs, restarts), picar.service
    restarts the service, and `stop.py` writes neutral.
 4. **Process death.** The PCA9685 keeps its last pulse, so `ExecStopPost` always writes neutral.
 5. **Limits are car-side.** `limits` in config are the hard cap. The dashboard's max-power slider
-   (25-100%) scales throttle inside the governor and can never exceed them.
-6. **Known gap.** If the Pi loses power the ESC's own signal-loss behaviour decides. Verify before floor
+   (10-100%) scales throttle inside the governor and can never exceed them. Every new driver starts at the
+   default max power (Settings > Car); changing it applies at once.
+6. **Obstacle brake** (Settings > Car, on by default). While you drive forward (and 2 s after), the detector watches
+   the road; forward throttle becomes 0 while something it knows (score >= 0.6) is close in the car's path: a
+   person within 1.2 m by estimated distance, or anything touching the bottom of the picture or filling 80% of
+   its height (`vision.brake` in config). Steering and reverse still work; a red banner says what it stopped for. It only sees the detector's 80 kinds of thing (not walls), reacts in about 0.3 s, and
+   a stale or missing detector means no brake, not a stopped car. The first ~0.3 s of forward from a standstill
+   is unchecked while the first detection runs.
+7. **Controllers.** Only a controller whose reported name and controls match a known layout (PS3, Xbox) is
+   used; anything else is ignored and logged. A controller drives nothing until every driving axis has read
+   neutral. (An Xbox controller read with the PS3 layout once took control at full forward: its released
+   trigger is where the PS3 layout reads the right stick.) Never connect a new controller while the car can move.
+8. **Event loop health.** The watchdog is also starved if the event loop stops for 2 s (the car would be
+   neutral but unreachable), so systemd restarts it.
+9. **Known gap.** If the Pi loses power the ESC's own signal-loss behaviour decides. Verify before floor
    driving.
 
 ## Calibration (config.json, `cal`)

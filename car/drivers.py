@@ -1,6 +1,7 @@
 """Motor/servo drivers. Both take set(steer, throttle) with values in -1..1 (+steer = right)."""
 import collections
 import json
+import math
 import os
 import time
 
@@ -10,16 +11,47 @@ from car.log import log
 SETTINGS = os.environ.get("PICAR_SETTINGS") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 DEFAULTS = {"steer_trim": 0.0, "default_power": 1.0,
             "cam_brightness": 50, "cam_exposure": "auto", "cam_flip": "none", "cam_quality": "normal",
-            "cam_saturation": 0, "cam_contrast": 0, "cam_sharpness": 0, "cam_awb": "auto", "vision_correct": "on"}
+            "cam_saturation": 0, "cam_contrast": 0, "cam_sharpness": 0, "cam_awb": "auto", "vision_correct": "on", "obstacle_brake": "on"}
+
+
+SETTING_RANGES = {"steer_trim": (-0.3, 0.3), "default_power": (0.1, 1.0), "cam_brightness": (20, 80),
+                  "cam_saturation": (-100, 100), "cam_contrast": (-100, 100), "cam_sharpness": (-100, 100)}
+SETTING_CHOICES = {"cam_exposure": ("auto", "night"), "cam_flip": ("none", "upside", "mirror"), "cam_quality": ("low", "normal", "high"),
+                   "cam_awb": ("auto", "sunlight", "cloudy", "tungsten"), "vision_correct": ("on", "off"), "obstacle_brake": ("on", "off")}
+
+
+def clean(key, value):
+    """A setting checked against its allowed values: (True, value clamped and typed) or (False, None)."""
+    if key in SETTING_CHOICES:
+        return (True, value) if isinstance(value, str) and value in SETTING_CHOICES[key] else (False, None)
+    if key in SETTING_RANGES and not isinstance(value, bool):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return False, None
+        if not math.isfinite(value):
+            return False, None
+        lo, hi = SETTING_RANGES[key]
+        value = max(lo, min(hi, value))
+        return True, int(round(value)) if key.startswith("cam_") else round(value, 3)   # camera values are whole numbers
+    return False, None
 
 
 def load_settings():
+    """settings.json, every value checked: anything hand-edited into nonsense falls back to its default. stop.py
+    (neutral after the server stops) reads this too, so a bad file must never crash it."""
     try:
         with open(SETTINGS) as f:
             saved = json.load(f)
     except (OSError, ValueError):
         saved = {}
-    return {k: saved.get(k, v) for k, v in DEFAULTS.items()}
+    if not isinstance(saved, dict):
+        saved = {}
+    out = {}
+    for k, default in DEFAULTS.items():
+        ok, v = clean(k, saved.get(k))
+        out[k] = v if ok else default
+    return out
 
 
 def save_settings(s):
